@@ -1,0 +1,13 @@
+{
+  "name": "narino-aventura-relay",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Servidor relay WebSocket opcional para el modo multijugador de Nariño Aventura 3D",
+  "scripts": {
+    "start": "node relay.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

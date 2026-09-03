@@ -41,7 +41,19 @@ export class CameraRig {
         this.camera.lookAt(this._desiredLook);
     }
 
-    setAspect(aspect) {
+    /**
+   * Evita que la cámara se hunda en el terreno: la eleva hasta `clearance`
+   * metros sobre el suelo y vuelve a apuntar al objetivo.
+   */
+  clampAboveGround(groundFn, clearance = 1.2) {
+    const minY = groundFn(this.camera.position.x, this.camera.position.z) + clearance;
+    if (this.camera.position.y < minY) {
+      this.camera.position.y = minY;
+      this.camera.lookAt(this._desiredLook);
+    }
+  }
+
+  setAspect(aspect) {
         this.camera.aspect = aspect;
         this.camera.updateProjectionMatrix();
     }

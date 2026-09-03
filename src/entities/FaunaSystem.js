@@ -65,8 +65,9 @@ const EAGLE_TAIL = 4861724;
 const EAGLE_WING_TIP = 15395562;
 
 export class FaunaSystem {
-  constructor(scene, { onDiscover } = {}) {
+  constructor(scene, { onDiscover, groundFn } = {}) {
     this.onDiscover = onDiscover || (() => {});
+    this.groundFn = groundFn || (() => 0);
     this.group = new Group();
     scene.add(this.group);
     this.discovered = new Set();
@@ -161,7 +162,7 @@ export class FaunaSystem {
       const angle = i / 3 * Math.PI * 2;
       const x = FOREST_CENTER.x + Math.cos(angle) * 28;
       const z = FOREST_CENTER.z + Math.sin(angle) * 28;
-      bear.position.set(x, 0, z);
+      bear.position.set(x, this.groundFn(x, z), z);
       this.group.add(bear);
       bears.push({
         group: bear,
@@ -213,7 +214,7 @@ export class FaunaSystem {
 
       const x = FOREST_CENTER.x + (Math.random() - .5) * 80;
       const z = FOREST_CENTER.z + (Math.random() - .5) * 80;
-      butterfly.position.set(x, 2.5, z);
+      butterfly.position.set(x, this.groundFn(x, z) + 2.5, z);
       this.group.add(butterfly);
       butterflies.push({
         group: butterfly,
@@ -244,9 +245,9 @@ export class FaunaSystem {
         eye.position.set(clawX * .4, .36, .12);
         crab.add(eye);
       }
-      const x = 224 + Math.random() * 36;
+      const x = 222 + Math.random() * 26;
       const z = -170 + Math.random() * 340;
-      crab.position.set(x, 0, z);
+      crab.position.set(x, this.groundFn(x, z), z);
       this.group.add(crab);
       crabs.push({
         group: crab,
@@ -353,7 +354,7 @@ export class FaunaSystem {
   _updateBears(dt, playerX, playerZ) {
     for (const bear of this.bears) {
       bear.state = Wanderer.stepWander(bear.state, dt, Math.random, 1.5, 42, FOREST_CENTER.x, FOREST_CENTER.z);
-      bear.group.position.set(bear.state.x, 0, bear.state.z);
+      bear.group.position.set(bear.state.x, this.groundFn(bear.state.x, bear.state.z), bear.state.z);
       bear.group.rotation.y = bear.state.heading;
       bear.phase += dt * 5;
       const swing = Math.sin(bear.phase) * .4;
@@ -371,7 +372,7 @@ export class FaunaSystem {
       butterfly.phase += dt * 1.2;
       const x = butterfly.base.x + Math.cos(butterfly.phase) * butterfly.r;
       const z = butterfly.base.z + Math.sin(butterfly.phase * 1.3) * butterfly.r;
-      const y = 2.2 + Math.sin(butterfly.phase * 2) * .8;
+      const y = this.groundFn(x, z) + 2.2 + Math.sin(butterfly.phase * 2) * .8;
       butterfly.group.position.set(x, y, z);
       const flap = Math.sin(this._t * 22 + butterfly.phase) * .8;
       butterfly.hingeL.rotation.z = -flap;
@@ -386,9 +387,9 @@ export class FaunaSystem {
       if (crab.hidden) {
         crab.hideTimer -= dt;
         if (crab.hideTimer <= 0) {
-          crab.base.x = 224 + Math.random() * 36;
+          crab.base.x = 222 + Math.random() * 26;
           crab.base.z = -170 + Math.random() * 340;
-          crab.group.position.set(crab.base.x, 0, crab.base.z);
+          crab.group.position.set(crab.base.x, this.groundFn(crab.base.x, crab.base.z), crab.base.z);
           crab.group.visible = true;
           crab.hidden = false;
         }

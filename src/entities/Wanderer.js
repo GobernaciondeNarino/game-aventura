@@ -38,6 +38,7 @@ export class Wanderer {
     this.behaviorTimer = 1 + rand() * 3;
     this.y = 0;
     this.vy = 0;
+    this.groundY = 0;
     this.group.position.set(x, 0, z);
   }
 
@@ -80,7 +81,7 @@ export class Wanderer {
   }
 
   applyPose() {
-    this.group.position.set(this.state.x, this.y, this.state.z);
+    this.group.position.set(this.state.x, this.groundY + this.y, this.state.z);
     this.group.rotation.y = this.state.heading;
   }
 

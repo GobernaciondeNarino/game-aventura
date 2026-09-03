@@ -66,7 +66,7 @@ export class HintNpc {
   }
 
   applyPose() {
-    this.group.position.set(this.state.x, 0, this.state.z);
+    this.group.position.set(this.state.x, this.groundY || 0, this.state.z);
     this.group.rotation.y = this.state.heading;
   }
 

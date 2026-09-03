@@ -40,8 +40,9 @@ function isOnRoad(x, z) {
 }
 
 export class Skateboard {
-  constructor(scene, { x = 5, z = -140 } = {}) {
+  constructor(scene, { x = 5, z = -140, groundFn = null } = {}) {
     this.group = new Group();
+    this.groundFn = groundFn;
 
     // Tabla
     const deckShape = roundedRectShape(.55, 1.7, .18);
@@ -97,7 +98,7 @@ export class Skateboard {
       }
     }
 
-    this.group.position.set(x, 0, z);
+    this.group.position.set(x, groundFn ? groundFn(x, z) : 0, z);
     this.group.visible = false;
     scene.add(this.group);
     this.spawn = { x, z };
@@ -123,7 +124,7 @@ export class Skateboard {
     const playerX = player.state.x;
     const playerZ = player.state.z;
     if (this.mounted) {
-      this.group.position.set(playerX, 0, playerZ);
+      this.group.position.set(playerX, player.state.y, playerZ);
       this.group.rotation.y = player.state.rotationY;
       player.facingOffset = FACING_OFFSET;
       player.riding = true;
@@ -146,6 +147,8 @@ export class Skateboard {
     player.facingOffset = 0;
     const sinY = Math.sin(player.state.rotationY);
     const cosY = Math.cos(player.state.rotationY);
-    this.group.position.set(player.state.x + sinY * .8, 0, player.state.z + cosY * .8);
+    const dropX = player.state.x + sinY * .8;
+    const dropZ = player.state.z + cosY * .8;
+    this.group.position.set(dropX, this.groundFn ? this.groundFn(dropX, dropZ) : player.state.y, dropZ);
   }
 }

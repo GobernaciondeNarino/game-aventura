@@ -4,6 +4,7 @@
 // balones, y detección de goles/canastas mediante zonas.
 
 import { Ball } from './Ball.js';
+import { nearbyCircles } from '../core/collision.js';
 
 const PLAYER_RADIUS = .5;
 const PICKUP_RANGE = 2;
@@ -22,11 +23,12 @@ const DEFAULT_SPAWNS = [
 ];
 
 export class BallSystem {
-    constructor(scene, colliders = [], spawns = null, { goalWalls, goalZones, onGoal } = {}) {
+    constructor(scene, colliders = [], spawns = null, { goalWalls, goalZones, onGoal, groundFn = null } = {}) {
         this.colliders = colliders;
         this.goalWalls = goalWalls || [];
         this.goalZones = goalZones || [];
         this.onGoal = onGoal || null;
+        this.groundFn = groundFn || (() => 0);
         const spawnList = spawns || DEFAULT_SPAWNS;
         this.balls = spawnList.map((spawn) => new Ball(spawn.kind, spawn.x, spawn.z));
         for (const ball of this.balls) {
@@ -81,7 +83,7 @@ export class BallSystem {
                 // Balón en manos: acompaña al jugador frente al pecho.
                 ball.state.x = playerX + dirX * HOLD_DISTANCE;
                 ball.state.z = playerZ + dirZ * HOLD_DISTANCE;
-                ball.state.y = HOLD_HEIGHT;
+                ball.state.y = player.state.y + HOLD_HEIGHT;
                 ball.state.vx = ball.state.vy = ball.state.vz = 0;
                 ball.applyToMesh(dt);
                 continue;
@@ -101,7 +103,7 @@ export class BallSystem {
                 ball.state.vz += dz / dist * pushSpeed;
             }
 
-            ball.state = Ball.simulateStep(ball.state, dt, ball.radius);
+            ball.state = Ball.simulateStep(ball.state, dt, ball.radius, this.groundFn(ball.state.x, ball.state.z));
             this._collideWorld(ball);
             this._collideAABBs(ball);
         }
@@ -267,7 +269,7 @@ export class BallSystem {
 
     // Colisionadores circulares del mundo ({ x, z, r }).
     _collideWorld(ball) {
-        for (const collider of this.colliders) {
+        for (const collider of nearbyCircles(this.colliders, ball.state.x, ball.state.z, ball.radius)) {
             if (!collider.r) continue;
             const dx = ball.state.x - collider.x;
             const dz = ball.state.z - collider.z;

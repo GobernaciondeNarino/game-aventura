@@ -1,22 +1,15 @@
 // Game — orquestador principal de "Nariño Aventura 3D".
 // Crea la escena, el renderer y la cámara; construye el mundo (caminos, sitios,
-// complejo deportivo, paisaje, carreteras, laberinto, tienda), los sistemas
+// complejo deportivo, paisaje, carreteras, laberinto, tienda), el entorno
+// realista (terreno, atmósfera, césped, árboles, agua, hojas), los sistemas
 // (balones, NPCs, fauna, patineta, progreso, inventario, ranking) y el HUD.
 // Ejecuta el bucle de render y coordina puntuación, preguntas y eventos.
 
-import {
-  Scene,
-  WebGLRenderer,
-  PCFSoftShadowMap,
-  Vector3,
-  Clock,
-  AmbientLight,
-  DirectionalLight,
-} from 'three';
+import { Scene, WebGLRenderer, PCFShadowMap, Vector3, Clock } from 'three';
 
 import { InputManager } from '../core/InputManager.js';
 import { CameraRig } from '../core/CameraRig.js';
-import { resolveCircles } from '../core/collision.js';
+import { ColliderIndex, resolveCircles } from '../core/collision.js';
 
 import { Player } from '../entities/Player.js';
 import { BallSystem } from '../entities/BallSystem.js';
@@ -24,7 +17,6 @@ import { NpcSystem } from '../entities/NpcSystem.js';
 import { FaunaSystem } from '../entities/FaunaSystem.js';
 import { Skateboard } from '../entities/Skateboard.js';
 
-import { setupEnvironment } from '../world/environment.js';
 import { buildPaths } from '../world/paths.js';
 import { buildLandscape } from '../world/landscape.js';
 import { buildRoads } from '../world/roads.js';
@@ -34,6 +26,21 @@ import { SiteManager } from '../world/SiteManager.js';
 import { Scoreboard } from '../world/Scoreboard.js';
 import { Shop } from '../world/Shop.js';
 import { clampToWorld } from '../world/worldBounds.js';
+import { MAZE, SKATE_SPAWN } from '../world/worldLayout.js';
+
+import { detectQuality, bakeWorkerCount } from '../environment/quality.js';
+import { buildTerrain, heightAt } from '../environment/Terrain.js';
+import { MAP_HALF } from '../environment/terrainMath.js';
+import { Atmosphere } from '../environment/Atmosphere.js';
+import { Grass } from '../environment/Grass.js';
+import { Trees } from '../environment/Trees.js';
+import { WaterBodies } from '../environment/WaterBodies.js';
+import { Leaves } from '../environment/Leaves.js';
+import { PostFX } from '../environment/Postprocessing.js';
+
+import { createTransportFromUrl } from '../net/transports.js';
+import { Multiplayer } from '../net/Multiplayer.js';
+import { ChatBox } from '../ui/ChatBox.js';
 
 import { REWARDS } from '../data/rewards.js';
 import { SHOP_ITEMS } from '../data/shopItems.js';
@@ -69,20 +76,27 @@ const SITE_COMPLETED_DELAY_MS = 1600;
 // Duración de los avisos del laberinto y retardo del aviso de patineta.
 const MAZE_TOAST_MS = 6e3;
 const SKATE_UNLOCK_TOAST_DELAY_MS = 4e3;
+// Pendiente máxima que el jugador puede subir (subida / avance horizontal ≈ 42°).
+const MAX_CLIMB = 0.9;
+// Altura mínima de la cámara sobre el terreno.
+const CAMERA_CLEARANCE = 1.1;
 
 export class Game {
   constructor(canvas) {
     this.canvas = canvas;
+    this.quality = detectQuality();
+    const usePost = Boolean(this.quality.smaa || this.quality.bloom || this.quality.ambientOcclusion);
+
     this.scene = new Scene();
-    this.renderer = new WebGLRenderer({ canvas, antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer = new WebGLRenderer({ canvas, antialias: !usePost, powerPreference: 'high-performance' });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.quality.maxPixelRatio));
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = PCFSoftShadowMap;
+    this.renderer.shadowMap.type = PCFShadowMap;
 
     // Cámara en tercera persona que sigue al jugador.
     this.cameraRig = new CameraRig({
       aspect: window.innerWidth / window.innerHeight,
-      far: 1200,
+      far: 2200,
       offset: new Vector3(0, 4, -7),
       lookOffset: new Vector3(0, 1.5, 0),
     });
@@ -90,18 +104,19 @@ export class Game {
     this.input = new InputManager(window);
     this.clock = new Clock();
 
-    this._buildLights();
-    setupEnvironment(this.scene);
+    // Cielo físico, sol con sombras, niebla, mapa de entorno y nubes.
+    this.atmosphere = new Atmosphere(this.scene, this.renderer, this.quality);
 
-    // Jugador (con capa).
+    // Jugador (con capa), apoyado sobre el terreno.
     this.player = new Player();
     this.player.state.x = 0;
     this.player.state.z = 10;
-    this.player.group.position.set(0, 0, 10);
+    this.player.state.y = heightAt(0, 10);
+    this.player.group.position.set(0, this.player.state.y, 10);
     this.scene.add(this.player.group);
     this.scene.add(this.player.cape.mesh);
 
-    // Mundo: caminos, sitios turísticos, marcador, complejo deportivo, paisaje y carreteras.
+    // Mundo: caminos, sitios turísticos, marcador, complejo deportivo, paisaje, carreteras y tienda.
     const paths = buildPaths(this.scene);
     this.sites = new SiteManager(this.scene);
     this.scoreboard = new Scoreboard();
@@ -110,8 +125,10 @@ export class Game {
     this.zones = sports.zones;
     this.landscape = buildLandscape(this.scene);
     const roads = buildRoads(this.scene);
+    this.shop = new Shop(this.scene);
 
-    // Colisionadores circulares compartidos por jugador, balones y NPCs.
+    // Colisionadores circulares compartidos por jugador, balones y NPCs,
+    // indexados espacialmente (los árboles se añaden en `init`).
     this.colliders = [
       ...this.sites.getColliders(),
       ...paths.colliders,
@@ -119,12 +136,15 @@ export class Game {
       ...sports.colliders,
       ...this.landscape.colliders,
       ...roads.colliders,
+      ...this.shop.colliders,
     ];
+    this.colliderIndex = new ColliderIndex(this.colliders, 16);
 
     // Balones con porterías: cada gol suma 1 punto.
-    this.balls = new BallSystem(this.scene, this.colliders, sports.ballSpawns, {
+    this.balls = new BallSystem(this.scene, this.colliderIndex, sports.ballSpawns, {
       goalWalls: sports.goalWalls,
       goalZones: sports.goalZones,
+      groundFn: heightAt,
       onGoal: () => {
         this.progress.addScore(1);
         this.scoreboard.updateStats(this.progress.stats());
@@ -140,6 +160,7 @@ export class Game {
 
     // HUD.
     const hud = document.getElementById('hud') || document.body;
+    this.hud = hud;
     this.infoPanel = new InfoPanel(hud);
     this.paused = false;
     this.questionPanel = new QuestionPanel(hud, {
@@ -152,13 +173,13 @@ export class Game {
     this.toast = new Toast(hud);
 
     // Patineta (se desbloquea al completar el laberinto).
-    this.skate = new Skateboard(this.scene, { x: 5, z: -140 });
+    this.skate = new Skateboard(this.scene, { x: SKATE_SPAWN.x, z: SKATE_SPAWN.z, groundFn: heightAt });
 
     // Laberinto: al completarlo otorga puntos y una pista pendiente.
     this.maze = new Maze(
       this.scene,
       hud,
-      { cx: 0, cz: -185, size: 74, cols: 11 },
+      { cx: MAZE.cx, cz: MAZE.cz, size: MAZE.size, cols: MAZE.cols },
       (points) => {
         this.progress.addScore(points);
         this.scoreboard.updateStats(this.progress.stats());
@@ -177,8 +198,9 @@ export class Game {
     );
 
     this.npcs = new NpcSystem(this.scene, {
-      colliders: this.colliders,
+      colliders: this.colliderIndex,
       progress: this.progress,
+      groundFn: heightAt,
     });
     this.controlsHint = new ControlsHint(hud);
     this.minimap = new Minimap(hud, this.sites);
@@ -188,6 +210,7 @@ export class Game {
 
     // Fauna: descubrir un animal muestra su ficha y suma puntos.
     this.fauna = new FaunaSystem(this.scene, {
+      groundFn: heightAt,
       onDiscover: (animal) => {
         this.progress.addScore(animal.points);
         this.scoreboard.updateStats(this.progress.stats());
@@ -199,13 +222,11 @@ export class Game {
 
     this.leaderboard = new Leaderboard();
     this.infoBtn = new InfoButton(hud);
-    this.usersBtn = new UsersButton(hud, this.leaderboard);
+    this.usersBtn = new UsersButton(hud, this.leaderboard, () => (this.net ? this.net.peersInfo() : []));
     this.nameModal = new NameModal(hud);
     this.rewardCard = new RewardCard(hud);
 
-    // Tienda 3D + inventario + interfaz de compra.
-    this.shop = new Shop(this.scene);
-    this.colliders.push(...this.shop.colliders);
+    // Inventario + interfaz de compra de la tienda.
     this.inventory = new Inventory(this.leaderboard.getLastName());
     this.shopUI = new ShopUI(hud, {
       onBuy: (item) => {
@@ -240,8 +261,117 @@ export class Game {
     this.resize(window.innerWidth, window.innerHeight);
     this.cameraRig.update(this.player.group, true);
 
+    // Función de altura del terreno, expuesta para depuración/pruebas.
+    this.heightAt = heightAt;
+    this._ready = false;
     this._running = false;
     this._tick = this._tick.bind(this);
+    this._focus = { x: 0, y: 0, z: 0 };
+  }
+
+  /**
+   * Construye el entorno realista (parte asíncrona: el relieve se hornea en
+   * Web Workers). Debe llamarse antes de `start()`.
+   * @param {(message: string) => void} [onProgress]
+   */
+  async init(onProgress = () => {}) {
+    const q = this.quality;
+    onProgress('Modelando el relieve de Nariño…');
+    const terrain = await buildTerrain({
+      segments: q.terrainSegments,
+      mapSize: q.mapSize,
+      workers: bakeWorkerCount(),
+    });
+    this.terrain = terrain;
+    this.scene.add(terrain.mesh);
+
+    onProgress('Sembrando el césped…');
+    this.grass = new Grass(this.scene, {
+      heightTexture: terrain.heightTexture,
+      surfaceTexture: terrain.surfaceTexture,
+      mapHalf: MAP_HALF,
+      mapSize: q.mapSize,
+      quality: q,
+    });
+    this.leaves = new Leaves(this.scene, {
+      heightTexture: terrain.heightTexture,
+      mapHalf: MAP_HALF,
+      count: q.leafParticles,
+    });
+
+    onProgress('Plantando bosques…');
+    this.trees = new Trees(this.scene, { quality: q });
+    await this.trees.build(this.renderer, this.scene.environment, this.atmosphere.sunDirection);
+    for (const c of this.trees.colliders) this.colliderIndex.add(c);
+
+    onProgress('Llenando lagos, ríos y el Pacífico…');
+    this.water = new WaterBodies(this.scene, {
+      sunDirection: this.atmosphere.sunDirection,
+      quality: q,
+      reflectionHide: [this.grass.mesh, this.leaves.mesh, this.trees.impostors].filter(Boolean),
+    });
+
+    this.postfx = new PostFX(this.renderer, this.scene, this.camera, q, window.innerWidth, window.innerHeight);
+    this.resize(window.innerWidth, window.innerHeight);
+
+    this._updateFocus();
+    this.atmosphere.update(0, this._focus);
+    this.trees.update(0, this._focus);
+    this.grass.update(0, this._focus);
+    this.cameraRig.update(this.player.group, true);
+    this.cameraRig.clampAboveGround(heightAt, CAMERA_CLEARANCE);
+    this._setupMultiplayer();
+    this._ready = true;
+  }
+
+  // Multijugador: P2P por defecto (sin servidor); ver net/transports.js para
+  // las opciones de URL (?sala=, ?red=off, ?red=relay&relay=wss://...).
+  _setupMultiplayer() {
+    let transport = null;
+    try {
+      transport = createTransportFromUrl();
+    } catch (err) {
+      console.warn('[red] multijugador no disponible:', err?.message || err);
+    }
+    if (!transport) return;
+    try {
+      this._startMultiplayer(transport);
+    } catch (err) {
+      console.warn('[red] multijugador desactivado por error:', err);
+      this.net = null;
+    }
+  }
+
+  _startMultiplayer(transport) {
+    this.chat = new ChatBox(this.hud, { onSend: (text) => this.net && this.net.sendChat(text) });
+    this.net = new Multiplayer(this.scene, {
+      transport,
+      getProfile: () => this._netProfile(),
+      onChat: (name, text, isSelf) => this.chat.addMessage(name, text, isSelf),
+      onPeersChanged: (count) => this.chat.setOnline(count + 1),
+      onSystem: (text) => this.chat.addMessage('', text, false, true),
+    });
+    this.net.start(this.player);
+    this.chat.setOnline(1);
+    this.net.broadcastProfile();
+  }
+
+  // Perfil que se comparte con los demás jugadores (nombre, aspecto, puntaje).
+  _netProfile() {
+    const shirt = this.inventory.getEquipped('shirt');
+    const pants = this.inventory.getEquipped('pants');
+    const cape = this.inventory.getEquipped('cape');
+    const hat = this.inventory.getEquipped('hat');
+    return {
+      name: this.leaderboard.getLastName() || 'Viajero',
+      shirt: shirt?.color,
+      pants: pants?.color,
+      cape: cape?.color,
+      hat: hat?.type === 'none' ? null : { type: hat?.type, color: hat?.color },
+      capeVisible: this.player.cape.mesh.visible,
+      score: this.progress.score,
+      sites: this.progress.sitesCompleted,
+    };
   }
 
   // Respuesta a una pregunta: actualiza progreso, sonido y capa; al completar el sitio lo marca.
@@ -270,6 +400,7 @@ export class Game {
       });
       this.inventory.setPlayerName(name);
       this._applyEquippedSkin();
+      this.net && this.net.broadcastProfile();
       reward && this.rewardCard.show(reward);
     });
   }
@@ -289,6 +420,7 @@ export class Game {
       hat: hat?.type === 'none' ? null : { type: hat?.type, color: hat?.color },
     });
     skate && this.skate.setBorderColor(skate.color);
+    this.net && this.net.broadcastProfile();
   }
 
   // Regalo de bienvenida: un artículo aleatorio (gorro, camiseta o patineta) no poseído.
@@ -304,24 +436,6 @@ export class Game {
     const gift = candidates[Math.floor(Math.random() * candidates.length)];
     this.inventory.grant(gift.id);
     this.toast.show(`🎁 ¡Regalo: ${gift.name}! Visita la tienda al sur-este para equiparlo.`, 7e3);
-  }
-
-  // Luz ambiente + sol direccional con sombras.
-  _buildLights() {
-    const ambient = new AmbientLight(16777215, 0.85);
-    this.scene.add(ambient);
-    const sun = new DirectionalLight(16775920, 1.2);
-    sun.position.set(40, 80, 30);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.camera.left = -90;
-    sun.shadow.camera.right = 90;
-    sun.shadow.camera.top = 90;
-    sun.shadow.camera.bottom = -90;
-    sun.shadow.camera.near = 1;
-    sun.shadow.camera.far = 260;
-    this.scene.add(sun);
-    this.sun = sun;
   }
 
   start() {
@@ -340,12 +454,31 @@ export class Game {
     if (!this._running) return;
     const dt = Math.min(this.clock.getDelta(), MAX_DELTA);
     this.update(dt);
-    this.renderer.render(this.scene, this.camera);
+    if (this.postfx) this.postfx.render(dt);
+    else this.renderer.render(this.scene, this.camera);
     requestAnimationFrame(this._tick);
+  }
+
+  _updateFocus() {
+    this._focus.x = this.player.state.x;
+    this._focus.y = this.player.state.y;
+    this._focus.z = this.player.state.z;
+  }
+
+  // Entorno vivo: viento, agua, nubes, sombras que siguen al jugador.
+  _updateEnvironment(dt) {
+    this._updateFocus();
+    this.atmosphere.update(dt, this._focus);
+    this.grass && this.grass.update(dt, this._focus);
+    this.trees && this.trees.update(dt, this._focus);
+    this.water && this.water.update(dt);
+    this.leaves && this.leaves.update(dt, this._focus);
+    this.net && this.net.update(dt, this.player);
   }
 
   // Actualización por frame: entrada, física del jugador, colisiones y sistemas.
   update(dt) {
+    if (!this._ready) return;
     const eDown = this.input.isPressed('KeyE');
     const eEdge = eDown && !this._ePrev;
     this._ePrev = eDown;
@@ -362,32 +495,49 @@ export class Game {
     const bEdge = bDown && !this._bPrev;
     this._bPrev = bDown;
 
+    this._updateEnvironment(dt);
+
     // Pausa (pregunta abierta): solo se animan sitios y cámara.
     if (this.paused) {
       this.sites.update(dt, this.player.state.x, this.player.state.z);
-      this.cameraRig.update(this.player.group);
+      this._updateCamera();
       return;
     }
     // Tienda abierta: solo se anima el tendero y la cámara.
     if (this.shopUI && this.shopUI.isOpen) {
       this.shop.update(dt);
-      this.cameraRig.update(this.player.group);
+      this._updateCamera();
       return;
     }
 
-    this.player.update(dt, this.input);
+    const prevX = this.player.state.x;
+    const prevZ = this.player.state.z;
+    const prevGround = heightAt(prevX, prevZ);
+    this.player.update(dt, this.input, heightAt);
+
+    // Pendientes demasiado empinadas: el terreno actúa como muro natural.
+    const moved = Math.hypot(this.player.state.x - prevX, this.player.state.z - prevZ);
+    if (moved > 1e-4 && this.player.state.isGrounded) {
+      const rise = heightAt(this.player.state.x, this.player.state.z) - prevGround;
+      if (rise > moved * MAX_CLIMB) {
+        this.player.state.x = prevX;
+        this.player.state.z = prevZ;
+        this.player.state.y = prevGround;
+      }
+    }
 
     // Colisiones: círculos del mundo → laberinto → tienda → límites del mundo.
-    const afterCircles = resolveCircles(this.colliders, this.player.state.x, this.player.state.z);
+    const afterCircles = resolveCircles(this.colliderIndex, this.player.state.x, this.player.state.z);
     const afterMaze = this.maze.collide(afterCircles.x, afterCircles.z);
     const afterShop = this.shop.collide(afterMaze.x, afterMaze.z);
     const resolved = this._applyWorldBounds(afterShop.x, afterShop.z);
     if (resolved.x !== this.player.state.x || resolved.z !== this.player.state.z) {
       this.player.state.x = resolved.x;
       this.player.state.z = resolved.z;
-      this.player.group.position.x = resolved.x;
-      this.player.group.position.z = resolved.z;
+      if (this.player.state.isGrounded) this.player.state.y = heightAt(resolved.x, resolved.z);
     }
+    const lift = this.player.riding ? 0.4 : 0;
+    this.player.group.position.set(this.player.state.x, this.player.state.y + lift, this.player.state.z);
 
     // Sitio turístico activo: panel informativo y pregunta con la tecla E.
     const activeSite = this.sites.update(dt, this.player.state.x, this.player.state.z);
@@ -416,7 +566,12 @@ export class Game {
     } else {
       this.controlsHint.hide();
     }
+    this._updateCamera();
+  }
+
+  _updateCamera() {
     this.cameraRig.update(this.player.group);
+    this.cameraRig.clampAboveGround(heightAt, CAMERA_CLEARANCE);
   }
 
   // Abre/cierra la tienda al entrar o salir del área del tendero.
@@ -487,6 +642,7 @@ export class Game {
   resize(width, height) {
     this.renderer.setSize(width, height, false);
     this.cameraRig.setAspect(width / height);
+    this.postfx && this.postfx.setSize(width, height);
   }
 
   dispose() {

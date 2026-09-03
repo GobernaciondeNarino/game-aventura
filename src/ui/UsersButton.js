@@ -16,8 +16,9 @@ function escapeHtml(value) {
 
 export class UsersButton {
   /** `leaderboard` debe exponer `list()` → [{ name, score, sites, rewards }]. */
-  constructor(parent, leaderboard) {
+  constructor(parent, leaderboard, getOnline = null) {
     this.lb = leaderboard;
+    this.getOnline = getOnline;
     this.btn = document.createElement('button');
     this.btn.title = 'Jugadores';
     this.btn.innerHTML = ICON_USERS;
@@ -98,5 +99,14 @@ export class UsersButton {
               <tbody>${rows}</tbody>
             </table>` : '<div style="opacity:0.7;font-size:0.95rem;">Aún no hay jugadores registrados.</div>'}
     `;
+    // Jugadores conectados en esta sala (modo multijugador).
+    if (this.getOnline) {
+      const online = this.getOnline();
+      const section = document.createElement('div');
+      section.style.cssText = 'margin-top:12px;padding-top:10px;border-top:1px solid #d5e4e6;';
+      const rows = online.map((p) => `<div style="display:flex;justify-content:space-between;padding:3px 6px;font-size:0.92rem;"><span>${p.self ? '🟢 ' : '🔵 '}${escapeHtml(p.name || 'Viajero')}${p.self ? ' (tú)' : ''}</span><span style="font-weight:700;">${p.score ?? 0}</span></div>`).join('');
+      section.innerHTML = `<div style="font-size:0.95rem;font-weight:800;color:#0f7d84;margin-bottom:6px;">🌐 En línea ahora (${online.length})</div>${rows || '<div style="opacity:0.7;font-size:0.9rem;">Buscando otros jugadores…</div>'}`;
+      this.panel.appendChild(section);
+    }
   }
 }

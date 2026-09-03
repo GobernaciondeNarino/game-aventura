@@ -31,15 +31,15 @@ export class Ball {
         this._axis = new Vector3();
     }
 
-    static simulateStep(state, dt, radius = BALL_RADIUS) {
+    static simulateStep(state, dt, radius = BALL_RADIUS, groundY = 0) {
         let { x, y, z, vx, vy, vz } = state;
         vy += GRAVITY * dt;
         x += vx * dt;
         y += vy * dt;
         z += vz * dt;
         let grounded = false;
-        if (y <= radius) {
-            y = radius;
+        if (y <= groundY + radius) {
+            y = groundY + radius;
             grounded = true;
             if (vy < 0) {
                 vy = -vy * BOUNCE;

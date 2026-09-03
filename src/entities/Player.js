@@ -285,7 +285,8 @@ export class Player {
     }
 
     // Paso de física puro: devuelve el nuevo estado sin tocar la escena.
-    static simulateStep(state, input, dt, speedMultiplier = 1) {
+    static simulateStep(state, input, dt, speedMultiplier = 1, groundFn = null) {
+        const groundHere = groundFn ? groundFn(state.x, state.z) : 0;
         const turn = (input.isPressed('KeyA') ? 1 : 0) + (input.isPressed('KeyD') ? -1 : 0);
         const forward = (input.isPressed('KeyW') ? 1 : 0) + (input.isPressed('KeyS') ? -1 : 0);
         const sprint = input.isPressed('ShiftLeft') || input.isPressed('ShiftRight');
@@ -300,8 +301,8 @@ export class Player {
         }
         vy += GRAVITY * dt;
         let y = state.y + vy * dt;
-        if (y <= 0) {
-            y = 0;
+        if (y <= groundHere) {
+            y = groundHere;
             vy = 0;
             isGrounded = true;
         }
@@ -311,6 +312,17 @@ export class Player {
         const step = forward * speed * control * dt;
         const x = state.x + Math.sin(rotationY) * step;
         const z = state.z + Math.cos(rotationY) * step;
+        // Seguir el relieve: pegado al suelo al caminar, aterrizar si cae bajo él.
+        if (groundFn) {
+            const groundThere = groundFn(x, z);
+            if (isGrounded) {
+                y = groundThere;
+            } else if (y < groundThere) {
+                y = groundThere;
+                vy = 0;
+                isGrounded = true;
+            }
+        }
         return {
             x,
             y,
@@ -323,9 +335,9 @@ export class Player {
         };
     }
 
-    update(dt, input) {
+    update(dt, input, groundFn = null) {
         const wasGrounded = this.state.isGrounded;
-        this.state = Player.simulateStep(this.state, input, dt, this.speedMultiplier);
+        this.state = Player.simulateStep(this.state, input, dt, this.speedMultiplier, groundFn);
         const lift = this.riding ? RIDE_LIFT : 0;
         this.group.position.set(this.state.x, this.state.y + lift, this.state.z);
         this.group.rotation.y = this.state.rotationY + this.facingOffset;
@@ -333,6 +345,41 @@ export class Player {
         this._updateAnimations(dt);
 
         // Actualizar anclajes de la capa en espacio mundo.
+        this.group.updateMatrixWorld(true);
+        this._bodyWorld.copy(this.body.matrixWorld);
+        for (let i = 0; i < CAPE_ANCHOR_COUNT; i++) {
+            this._anchorWorld[i].copy(this._anchorLocal[i]).applyMatrix4(this._bodyWorld);
+        }
+        this.cape.update(dt, this._anchorWorld, this._computeWind(dt), {
+            x: this.state.x,
+            z: this.state.z,
+            r: CAPE_BODY_RADIUS,
+        });
+    }
+
+    /**
+     * Aplica un estado recibido por red (avatar remoto): posiciona el rig,
+     * anima extremidades y capa sin simular física local.
+     */
+    applyRemoteState(dt, remote) {
+        const wasGrounded = this.state.isGrounded;
+        this.state = {
+            x: remote.x,
+            y: remote.y,
+            z: remote.z,
+            rotationY: remote.rotationY,
+            vy: remote.vy || 0,
+            isGrounded: remote.isGrounded !== false,
+            isMoving: !!remote.isMoving,
+            isSprinting: !!remote.isSprinting,
+        };
+        this.riding = !!remote.riding;
+        this.facingOffset = this.riding ? -Math.PI / 2 : 0;
+        const lift = this.riding ? RIDE_LIFT : 0;
+        this.group.position.set(this.state.x, this.state.y + lift, this.state.z);
+        this.group.rotation.y = this.state.rotationY + this.facingOffset;
+        if (!wasGrounded && this.state.isGrounded) this._squashAmount = 1;
+        this._updateAnimations(dt);
         this.group.updateMatrixWorld(true);
         this._bodyWorld.copy(this.body.matrixWorld);
         for (let i = 0; i < CAPE_ANCHOR_COUNT; i++) {

@@ -44,9 +44,10 @@ const LOCAL_WANDER_CENTERS = [
 ];
 
 export class NpcSystem {
-  constructor(scene, { colliders = [], progress } = {}) {
+  constructor(scene, { colliders = [], progress, groundFn = null } = {}) {
     this.colliders = colliders;
     this.progress = progress;
+    this.groundFn = groundFn || (() => 0);
     this.wanderers = [];
     this.hintNpcs = [];
 
@@ -70,9 +71,9 @@ export class NpcSystem {
 
     // Errantes en la playa.
     for (let i = 0; i < 5; i++) {
-      const x = 230 + Math.random() * 40;
+      const x = 214 + Math.random() * 30;
       const z = -120 + Math.random() * 240;
-      this._addWanderer(scene, x, z, 80, 250, 0);
+      this._addWanderer(scene, x, z, 34, 230, 0);
     }
 
     // Errantes locales cerca de puntos de interés.
@@ -134,6 +135,7 @@ export class NpcSystem {
       wanderer.state.x = clamped.x;
       wanderer.state.z = clamped.z;
       this._playerCollide(wanderer, player);
+      wanderer.groundY = this.groundFn(wanderer.state.x, wanderer.state.z);
       wanderer.animate(stepDt);
       wanderer.applyPose();
       wanderer.bubble.update(stepDt);
@@ -151,6 +153,7 @@ export class NpcSystem {
       hintNpc.state.x = resolved.x;
       hintNpc.state.z = resolved.z;
       this._playerCollide(hintNpc, player);
+      hintNpc.groundY = this.groundFn(hintNpc.state.x, hintNpc.state.z);
       hintNpc.animateWalk(dt);
       hintNpc.applyPose();
       hintNpc.bubble.update(dt);
