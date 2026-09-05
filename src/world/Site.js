@@ -12,23 +12,32 @@ import {
   MeshStandardMaterial,
   CanvasTexture,
 } from 'three';
+import { siteRotation } from './sitesData.js';
 
 export class Site {
-  constructor(data, group) {
+  /**
+   * @param {object} data datos del sitio (sitesData)
+   * @param {import('three').Group} group maqueta construida (marco local)
+   * @param {(x:number, z:number) => number} [groundFn] cota del terreno
+   */
+  constructor(data, group, groundFn = null) {
     this.id = data.id;
     this.name = data.name;
     this.municipio = data.municipio;
     this.description = data.description;
-    this.position = new Vector3(data.position.x, 0, data.position.z);
+    const baseY = groundFn ? groundFn(data.position.x, data.position.z) : 0;
+    this.position = new Vector3(data.position.x, baseY, data.position.z);
     this.proximityRadius = data.proximityRadius;
     this.solidRadius = data.solidRadius;
+    this.extraColliders = [];
     this.visited = false;
     this.group = group;
     this.group.position.copy(this.position);
     const scale = data.scale || 1;
     this.group.scale.setScalar(scale);
     // La maqueta mira hacia el centro del mundo (más rotación extra opcional)
-    this.group.rotation.y = Math.atan2(-this.position.x, -this.position.z) + (data.rotation || 0);
+    this.group.rotation.y = siteRotation(data);
+    this.group.updateMatrixWorld(true);
     this.label = this._buildLabel();
     this.visitedRing = this._buildVisitedRing();
   }
@@ -36,7 +45,7 @@ export class Site {
   // Sprite con el nombre, colocado sobre la parte más alta de la maqueta
   _buildLabel() {
     const bounds = new Box3().setFromObject(this.group);
-    const topY = Number.isFinite(bounds.max.y) ? bounds.max.y : 8;
+    const topY = Number.isFinite(bounds.max.y) ? Math.min(bounds.max.y, this.position.y + 26) : this.position.y + 8;
     const texture = makeLabelTexture(this.name);
     const sprite = new Sprite(new SpriteMaterial({ map: texture, transparent: true, depthTest: true }));
     sprite.scale.set(8, 2, 1);
@@ -56,7 +65,7 @@ export class Site {
       }),
     );
     ring.rotation.x = -Math.PI / 2;
-    ring.position.set(this.position.x, .15, this.position.z);
+    ring.position.set(this.position.x, this.position.y + .15, this.position.z);
     ring.visible = false;
     return ring;
   }

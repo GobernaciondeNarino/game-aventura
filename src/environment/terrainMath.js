@@ -2,31 +2,31 @@
 //
 // `heightAt(x, z)` es la "verdad" del relieve para todo el juego: la malla del
 // terreno, las texturas de altura/superficie que consume la GPU (césped) y las
-// entidades (jugador, NPC, balones, fauna, props) consultan esta misma función,
-// así que todo queda apoyado exactamente sobre el suelo.
+// entidades (jugador, NPC, balones, fauna, props) consultan esta misma función.
 //
 // Composición del relieve:
-//   1. colinas suaves de ruido fBm,
-//   2. atenuadas por una máscara de "zonas planas" (plaza, vías, sitios,
-//      complejo deportivo, laberinto, tienda...) para no romper la jugabilidad,
-//   3. cordillera en el anillo exterior y cordillera lejana en el horizonte,
+//   1. colinas suaves de ruido fBm y cordilleras (anillo cercano y horizonte),
+//   2. "niveles": terrazas planas a distinta cota para las zonas jugables
+//      (plaza, vías, complejo deportivo, laberinto, tienda a cota 0; cada sitio
+//      turístico en su propia terraza) unidas por rampas a lo largo de los
+//      senderos,
+//   3. conos volcánicos que nacen de la terraza de cada volcán (y cráteres),
 //   4. playa que desciende hacia el Pacífico en el sector este,
 //   5. colina rocosa de la cascada,
-//   6. cuencas negativas para lagos, poza y río.
+//   6. cuencas negativas: lagos, poza, río somero y cañón del Guáitara.
 
 import { createNoise2D } from 'simplex-noise';
-import { SITES } from '../world/sitesData.js';
+import { SITES, sitePathEnd } from '../world/sitesData.js';
 import {
   RING_ROAD_RADIUS, ROAD_POLYLINES, ROUNDABOUTS, COMPLEX_PATHS, COMPLEX_PAD, MAZE, SHOP,
   SHOP_ACCESS_ROAD, SHOP_PARKING, SKATE_SPAWN, PLAZA, SEA_LEVEL, BEACH, LAKES, WATERFALL,
-  RIVER, FOREST, SPORT_ZONES,
+  RIVER, FOREST, SPORT_ZONES, PATH_RAMP_START,
 } from '../world/worldLayout.js';
 
 // Extensión de la malla de terreno (media anchura) y de las texturas de mapa.
 export const TERRAIN_EXTENT = 900;
 export const MAP_HALF = 360;
-// Umbral bajo el cual una zona se considera agua (todos los espejos de agua
-// están entre -0.45 y -0.55).
+// Umbral bajo el cual una zona se considera agua (respecto al nivel local).
 export const WATER_THRESHOLD = -0.42;
 
 // ---- PRNG y ruido deterministas -------------------------------------------
@@ -70,8 +70,8 @@ export function clamp01(v) {
   return v < 0 ? 0 : v > 1 ? 1 : v;
 }
 
-// Distancia de (px,pz) al segmento a-b.
-function segmentDistance(px, pz, ax, az, bx, bz) {
+// Distancia de (px,pz) al segmento a-b y parámetro t del punto más cercano.
+function segmentClosest(px, pz, ax, az, bx, bz) {
   const dx = bx - ax;
   const dz = bz - az;
   const len2 = dx * dx + dz * dz || 1e-9;
@@ -79,7 +79,11 @@ function segmentDistance(px, pz, ax, az, bx, bz) {
   t = t < 0 ? 0 : t > 1 ? 1 : t;
   const cx = ax + dx * t;
   const cz = az + dz * t;
-  return Math.hypot(px - cx, pz - cz);
+  return { d: Math.hypot(px - cx, pz - cz), t };
+}
+
+function segmentDistance(px, pz, ax, az, bx, bz) {
+  return segmentClosest(px, pz, ax, az, bx, bz).d;
 }
 
 function polylineDistance(points, px, pz) {
@@ -107,51 +111,57 @@ function softMask(outsideDistance, falloff) {
 
 // ---- formas precalculadas --------------------------------------------------
 
-// Senderos de la plaza a cada sitio (cápsulas). Los de Las Lajas y La Cocha
-// llevan canales de agua a los lados, por eso son más anchos.
+// Senderos de la plaza a cada sitio (cápsulas) con su rampa.
 const SITE_PATHS = SITES.map((site) => {
   const len = Math.hypot(site.position.x, site.position.z) || 1;
   const ux = site.position.x / len;
   const uz = site.position.z / len;
   const start = 20;
-  const end = len - ((site.solidRadius || 8) + 1);
-  const wide = site.id === 'lajas' || site.id === 'cocha';
+  const padRadius = site.padRadius ?? (site.solidRadius || 8) + 12;
+  const end = sitePathEnd(site);
   return {
+    id: site.id,
+    ux, uz, len,
     ax: ux * start, az: uz * start, bx: ux * end, bz: uz * end,
-    halfWidth: wide ? 12.5 : 5.5,
-    hardHalfWidth: wide ? 12.5 : PLAZA.pathWidth / 2 + 0.2,
+    halfWidth: 6,
+    hardHalfWidth: PLAZA.pathWidth / 2 + 0.2,
+    rampFullAt: Math.max(PATH_RAMP_START + 20, len - padRadius - 2),
+    elevation: site.elevation || 0,
+    // en los volcanes el pavimento termina al pie del cono (sigue un sendero de tierra)
+    coneStart: site.terrain?.cone ? len - site.terrain.cone.radius : Infinity,
   };
 });
 
 const SITE_PADS = SITES.map((site) => ({
+  id: site.id,
   x: site.position.x, z: site.position.z,
-  flatRadius: (site.solidRadius || 8) + 10,
+  // dirección unitaria hacia la plaza (para el sendero que sube el cono)
+  tx: -site.position.x / (Math.hypot(site.position.x, site.position.z) || 1),
+  tz: -site.position.z / (Math.hypot(site.position.x, site.position.z) || 1),
+  flatRadius: site.padRadius ?? (site.solidRadius || 8) + 12,
   hardRadius: (site.solidRadius || 8) * 0.9,
+  h: site.elevation || 0,
+  cone: site.terrain?.cone || null,
+  crater: site.terrain?.crater || null,
 }));
 
 const MAZE_HALF = MAZE.size / 2;
 
+// Cota de la rampa de un sendero en función de la distancia radial recorrida.
+function rampHeight(path, radial) {
+  return path.elevation * smoothstep(PATH_RAMP_START, path.rampFullAt, radial);
+}
+
 // ---- máscaras --------------------------------------------------------------
 
 /**
- * 1 donde el terreno debe quedar totalmente plano (cota 0) por jugabilidad,
- * con transición suave hacia las colinas.
+ * Máscara (0..1) de las estructuras jugables a cota 0: plaza, vías, glorietas,
+ * parque deportivo, laberinto, tienda, patineta y orillas de agua. Los conos
+ * volcánicos no pueden invadirlas.
  */
-export function flatMask(x, z) {
+export function structureMask(x, z) {
   const r = Math.hypot(x, z);
   let m = softMask(Math.max(0, r - 30), 10); // plaza y explanada central
-
-  for (const pad of SITE_PADS) {
-    const d = Math.hypot(x - pad.x, z - pad.z);
-    m = Math.max(m, softMask(Math.max(0, d - pad.flatRadius), 10));
-    if (m >= 1) return 1;
-  }
-  for (const p of SITE_PATHS) {
-    const d = segmentDistance(x, z, p.ax, p.az, p.bx, p.bz);
-    m = Math.max(m, softMask(Math.max(0, d - p.halfWidth), 8));
-  }
-
-  // vía circunvalar y sus ramales
   m = Math.max(m, softMask(Math.max(0, Math.abs(r - RING_ROAD_RADIUS) - 8), 8));
   for (const road of ROAD_POLYLINES) {
     m = Math.max(m, softMask(Math.max(0, polylineDistance(road, x, z) - 6), 8));
@@ -159,24 +169,57 @@ export function flatMask(x, z) {
   for (const rb of ROUNDABOUTS) {
     m = Math.max(m, softMask(Math.max(0, Math.hypot(x - rb.x, z - rb.z) - 11), 8));
   }
-
-  // parque deportivo, laberinto, tienda, patineta
   m = Math.max(m, softMask(rectOutside(x, z, COMPLEX_PAD.x, COMPLEX_PAD.z, COMPLEX_PAD.hw, COMPLEX_PAD.hd), 14));
   m = Math.max(m, softMask(rectOutside(x, z, MAZE.cx, MAZE.cz, MAZE_HALF + 4, MAZE_HALF + 4), 10));
   m = Math.max(m, softMask(rectOutside(x, z, SHOP.x, SHOP.z, SHOP.size / 2 + 10, SHOP.size / 2 + 10), 10));
   m = Math.max(m, softMask(Math.max(0, segmentDistance(x, z, SHOP_ACCESS_ROAD.x, SHOP_ACCESS_ROAD.z0, SHOP_ACCESS_ROAD.x, SHOP_ACCESS_ROAD.z1) - 5), 8));
   m = Math.max(m, softMask(rectOutside(x, z, SHOP_PARKING.x, SHOP_PARKING.z, SHOP_PARKING.hw + 1.5, SHOP_PARKING.hd + 1.5), 6));
   m = Math.max(m, softMask(Math.max(0, Math.hypot(x - SKATE_SPAWN.x, z - SKATE_SPAWN.z) - 4), 6));
-
-  // orillas de lagos, poza y río: el agua se excava desde cota 0
   for (const lake of LAKES) {
     m = Math.max(m, softMask(Math.max(0, Math.hypot(x - lake.x, z - lake.z) - lake.R * 1.35), 12));
   }
   const pool = WATERFALL.pool;
   m = Math.max(m, softMask(Math.max(0, Math.hypot(x - pool.x, z - pool.z) - pool.R * 1.4), 10));
-  m = Math.max(m, softMask(Math.max(0, polylineDistance(RIVER.points, x, z) - RIVER.halfWidth - 2), 10));
-
+  m = Math.max(m, softMask(Math.max(0, polylineDistance(RIVER.points, x, z) - RIVER.canyonRim - 2), 10));
   return m;
+}
+
+/**
+ * Terrazas ("niveles"): devuelve la máscara total y la cota objetivo ponderada
+ * de todas las zonas planas (estructuras a cota 0, terrazas de sitios a su
+ * elevación y rampas de los senderos).
+ */
+export function padHeightAt(x, z) {
+  let mMax = structureMask(x, z);
+  let mSum = mMax;
+  let hSum = 0; // las estructuras están a cota 0
+
+  for (const pad of SITE_PADS) {
+    const d = Math.hypot(x - pad.x, z - pad.z);
+    const m = softMask(Math.max(0, d - pad.flatRadius), 10);
+    if (m > 0) {
+      mMax = Math.max(mMax, m);
+      mSum += m;
+      hSum += m * pad.h;
+    }
+  }
+  for (const p of SITE_PATHS) {
+    const c = segmentClosest(x, z, p.ax, p.az, p.bx, p.bz);
+    const m = softMask(Math.max(0, c.d - p.halfWidth), 8);
+    if (m > 0) {
+      const radial = x * p.ux + z * p.uz;
+      const h = rampHeight(p, radial);
+      mMax = Math.max(mMax, m);
+      mSum += m;
+      hSum += m * h;
+    }
+  }
+  return { m: mMax, h: mSum > 0 ? hSum / mSum : 0 };
+}
+
+/** Compatibilidad: máscara de zonas planas (sin la cota). */
+export function flatMask(x, z) {
+  return padHeightAt(x, z).m;
 }
 
 // ---- componentes del relieve -----------------------------------------------
@@ -211,6 +254,45 @@ function mountainsAt(x, z, r) {
   return m;
 }
 
+// Conos volcánicos (y cráteres) de los sitios, protegidos por la máscara de estructuras.
+function volcanoesAt(x, z, structure) {
+  let h = 0;
+  for (const pad of SITE_PADS) {
+    if (!pad.cone) continue;
+    const dx = x - pad.x;
+    const dz = z - pad.z;
+    const d = Math.hypot(dx, dz);
+    const R = pad.cone.radius;
+    if (d >= R) continue;
+    let slope = Math.pow(1 - smoothstep(0, R, d), 1.35);
+    let inside = 0; // interior del cráter (0..1)
+    let plateau = 1;
+    if (pad.crater) {
+      // cumbre truncada: meseta a la altura del borde, donde se excava el cráter
+      const rc = pad.crater.radius;
+      plateau = Math.pow(1 - smoothstep(0, R, rc), 1.35);
+      slope = Math.min(slope, plateau);
+      inside = 1 - smoothstep(rc * 0.45, rc * 0.95, d);
+    }
+    let cone = pad.cone.height * slope;
+    // Sendero de subida: cresta de pendiente constante hacia la plaza.
+    const along = dx * pad.tx + dz * pad.tz;
+    const lateral = Math.abs(dx * pad.tz - dz * pad.tx);
+    const trail = softMask(Math.max(0, lateral - 3.5), 6) * smoothstep(-3, 3, along);
+    if (trail > 0) {
+      const ramp = pad.crater
+        ? pad.cone.height * plateau * (1 - smoothstep(pad.crater.radius, R, d))
+        : pad.cone.height * (1 - d / R);
+      cone = cone * (1 - trail) + ramp * trail;
+    }
+    // rugosidad de la ladera (no dentro del cráter ni sobre el sendero)
+    cone += (1 - d / R) * 1.6 * fbm2(x * 0.07 + 3, z * 0.07 - 5, 2) * (1 - inside) * (1 - trail * 0.8);
+    if (pad.crater) cone -= pad.crater.depth * inside;
+    h += cone;
+  }
+  return h * (1 - structure);
+}
+
 function beachBlend(x, z, h) {
   if (x <= BEACH.sandStart) return h;
   const t = smoothstep(BEACH.sandStart, BEACH.sandFull, x);
@@ -237,16 +319,50 @@ function basinDepth(d, R, depth) {
   return -depth * Math.pow(t, 0.85);
 }
 
+/**
+ * Muestra el río: distancia al eje, nivel del agua y encajonamiento
+ * interpolados en el tramo más cercano.
+ */
+export function riverSample(x, z) {
+  const pts = RIVER.points;
+  let best = { d: Infinity, level: pts[0].level, canyon: 0 };
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    const c = segmentClosest(x, z, a.x, a.z, b.x, b.z);
+    if (c.d < best.d) {
+      best = {
+        d: c.d,
+        level: a.level + (b.level - a.level) * c.t,
+        canyon: a.canyon + (b.canyon - a.canyon) * c.t,
+      };
+    }
+  }
+  return best;
+}
+
 function basinsAt(x, z) {
   let b = 0;
   for (const lake of LAKES) {
-    b += basinDepth(Math.hypot(x - lake.x, z - lake.z), lake.R, lake.depth);
+    const d = Math.hypot(x - lake.x, z - lake.z);
+    if (lake.wall) {
+      // lago de fondo de cañón: pared casi vertical hasta el fondo
+      const bottom = lake.level - lake.depth;
+      b += bottom * smoothstep(lake.R, lake.R * 0.72, d);
+    } else {
+      b += basinDepth(d, lake.R, lake.depth);
+    }
   }
   const pool = WATERFALL.pool;
   b += basinDepth(Math.hypot(x - pool.x, z - pool.z), pool.R, pool.depth);
-  const dRiver = polylineDistance(RIVER.points, x, z);
-  if (dRiver < RIVER.halfWidth) {
-    b -= RIVER.depth * (1 - smoothstep(0, RIVER.halfWidth, dRiver));
+
+  const rs = riverSample(x, z);
+  if (rs.d < RIVER.canyonRim) {
+    // cauce somero (perfil suave) mezclado con el cañón (paredes abruptas)
+    const shallow = rs.d < RIVER.halfWidth ? -RIVER.depth * (1 - smoothstep(0, RIVER.halfWidth, rs.d)) : 0;
+    const bed = rs.level - RIVER.bedOffset;
+    const canyon = bed * (1 - smoothstep(RIVER.canyonHalfWidth, RIVER.canyonRim, rs.d));
+    b += shallow * (1 - rs.canyon) + canyon * rs.canyon;
   }
   return b;
 }
@@ -256,8 +372,10 @@ function basinsAt(x, z) {
 /** Altura del terreno (m) en coordenadas de mundo. */
 export function heightAt(x, z) {
   const r = Math.hypot(x, z);
-  const flat = flatMask(x, z);
-  let h = (hillsAt(x, z, r) + mountainsAt(x, z, r)) * (1 - flat);
+  const pad = padHeightAt(x, z);
+  const natural = hillsAt(x, z, r) + mountainsAt(x, z, r);
+  let h = natural * (1 - pad.m) + pad.h * pad.m;
+  h += volcanoesAt(x, z, structureMask(x, z));
   h = beachBlend(x, z, h);
   h += waterfallHillAt(x, z);
   h += basinsAt(x, z);
@@ -282,30 +400,31 @@ export function slopeAt(x, z) {
   return 1 - normalAt(x, z).y;
 }
 
-/** true si el punto está bajo un espejo de agua (lago, poza, río o mar). */
-export function isWaterAt(x, z) {
-  return heightAt(x, z) < WATER_THRESHOLD;
-}
-
-/** Nivel del agua que cubre un punto dado (o null si está en seco). */
+/**
+ * Nivel del agua que cubre un punto dado (o null si está en seco).
+ * Comprueba mar, lagos, poza y río con sus niveles propios.
+ */
 export function waterLevelAt(x, z) {
-  if (heightAt(x, z) >= WATER_THRESHOLD) return null;
-  if (x > BEACH.shoreline - 8) return SEA_LEVEL;
+  const h = heightAt(x, z);
+  if (x > BEACH.shoreline - 8 && h < SEA_LEVEL + 0.03) return SEA_LEVEL;
   for (const lake of LAKES) {
-    if (Math.hypot(x - lake.x, z - lake.z) < lake.R) return lake.level;
+    if (Math.hypot(x - lake.x, z - lake.z) < lake.R && h < lake.level + 0.03) return lake.level;
   }
   const pool = WATERFALL.pool;
-  if (Math.hypot(x - pool.x, z - pool.z) < pool.R) return pool.level;
-  return RIVER.level;
+  if (Math.hypot(x - pool.x, z - pool.z) < pool.R && h < pool.level + 0.03) return pool.level;
+  const rs = riverSample(x, z);
+  if (rs.d < RIVER.canyonRim && h < rs.level + 0.03) return rs.level;
+  return null;
+}
+
+/** true si el punto está bajo un espejo de agua (lago, poza, río o mar). */
+export function isWaterAt(x, z) {
+  return waterLevelAt(x, z) !== null;
 }
 
 /**
  * Clasificación de superficie para texturizado y colocación de vegetación.
  * @returns {{hard:number, sand:number, water:number, dirt:number}}
- *   hard  = pavimento/estructuras (sin césped),
- *   sand  = arena de playa y orillas,
- *   water = 1 bajo el agua,
- *   dirt  = tierra desnuda (bordes de vías, suelo de bosque).
  */
 export function surfaceAt(x, z) {
   const r = Math.hypot(x, z);
@@ -320,13 +439,20 @@ export function surfaceAt(x, z) {
 
   for (const p of SITE_PATHS) {
     const d = segmentDistance(x, z, p.ax, p.az, p.bx, p.bz);
-    hard = Math.max(hard, softMask(Math.max(0, d - p.hardHalfWidth), 0.8));
-    dirt = Math.max(dirt, softMask(Math.max(0, d - p.hardHalfWidth), 3.5) * 0.7);
+    const radial = x * p.ux + z * p.uz;
+    const paved = 1 - smoothstep(p.coneStart - 8, p.coneStart, radial);
+    hard = Math.max(hard, softMask(Math.max(0, d - p.hardHalfWidth), 0.8) * paved);
+    dirt = Math.max(dirt, softMask(Math.max(0, d - p.hardHalfWidth), 3.5) * (0.7 + 0.25 * (1 - paved)));
   }
   for (const pad of SITE_PADS) {
     const d = Math.hypot(x - pad.x, z - pad.z);
     hard = Math.max(hard, softMask(Math.max(0, d - pad.hardRadius), 1.5));
     dirt = Math.max(dirt, softMask(Math.max(0, d - pad.hardRadius), 4) * 0.5);
+    if (pad.cone) {
+      // ladera volcánica: tierra y ceniza, sin césped cerca de la cumbre
+      const t = 1 - smoothstep(pad.cone.radius * 0.35, pad.cone.radius, d);
+      dirt = Math.max(dirt, t * 0.9);
+    }
   }
 
   // vías
@@ -367,19 +493,20 @@ export function surfaceAt(x, z) {
   let sand = smoothstep(194, 214, x);
   for (const lake of LAKES) {
     const d = Math.hypot(x - lake.x, z - lake.z);
-    sand = Math.max(sand, smoothstep(lake.R * 1.18, lake.R * 0.92, d));
+    if (lake.wall) sand = Math.max(sand, smoothstep(lake.R * 1.25, lake.R * 1.02, d) * 0.6);
+    else sand = Math.max(sand, smoothstep(lake.R * 1.18, lake.R * 0.92, d));
   }
   const pool = WATERFALL.pool;
   sand = Math.max(sand, smoothstep(pool.R * 1.3, pool.R, Math.hypot(x - pool.x, z - pool.z)));
-  const dRiver = polylineDistance(RIVER.points, x, z);
-  sand = Math.max(sand, smoothstep(RIVER.halfWidth + 1.5, RIVER.halfWidth - 1.5, dRiver));
+  const rs = riverSample(x, z);
+  const bank = RIVER.halfWidth * (1 - rs.canyon) + RIVER.canyonRim * rs.canyon;
+  sand = Math.max(sand, smoothstep(bank + 1.5, bank - 1.5, rs.d) * (1 - rs.canyon * 0.6));
 
   // suelo de bosque (más tierra, menos césped)
   const dForest = Math.hypot(x - FOREST.x, z - FOREST.z);
   dirt = Math.max(dirt, smoothstep(FOREST.radius, FOREST.radius * 0.45, dForest) * 0.7);
 
-  const h = heightAt(x, z);
-  const water = h < WATER_THRESHOLD ? 1 : 0;
+  const water = waterLevelAt(x, z) !== null ? 1 : 0;
 
   return { hard: clamp01(hard), sand: clamp01(sand), water, dirt: clamp01(dirt) };
 }

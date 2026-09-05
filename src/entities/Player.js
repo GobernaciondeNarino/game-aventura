@@ -19,7 +19,8 @@ import { Cape } from './Cape.js';
 
 const WALK_SPEED = 4;
 const SPRINT_SPEED = 9;
-const TURN_SPEED = 2;
+// Velocidad angular con la que el personaje se orienta hacia donde camina (rad/s).
+const FACE_TURN_SPEED = 11;
 const JUMP_VELOCITY = 8;
 const GRAVITY = -25;
 const AIR_CONTROL = .5;
@@ -284,14 +285,42 @@ export class Player {
         this.body.add(hatGroup);
     }
 
-    // Paso de física puro: devuelve el nuevo estado sin tocar la escena.
-    static simulateStep(state, input, dt, speedMultiplier = 1, groundFn = null) {
+    /**
+     * Paso de física puro: devuelve el nuevo estado sin tocar la escena.
+     * `cmd` describe la intención del jugador relativa a la cámara:
+     *   moveZ (adelante/atrás −1..1), moveX (lateral −1..1), yaw (orientación de
+     *   la cámara), faceYaw (orientación forzada del cuerpo o null), snap
+     *   (orientar de inmediato), sprint y jump.
+     */
+    static simulateStep(state, cmd, dt, speedMultiplier = 1, groundFn = null) {
         const groundHere = groundFn ? groundFn(state.x, state.z) : 0;
-        const turn = (input.isPressed('KeyA') ? 1 : 0) + (input.isPressed('KeyD') ? -1 : 0);
-        const forward = (input.isPressed('KeyW') ? 1 : 0) + (input.isPressed('KeyS') ? -1 : 0);
-        const sprint = input.isPressed('ShiftLeft') || input.isPressed('ShiftRight');
-        const jump = input.isPressed('Space');
-        const rotationY = state.rotationY + turn * TURN_SPEED * dt;
+        const moveX = clampUnit(cmd.moveX || 0);
+        const moveZ = clampUnit(cmd.moveZ || 0);
+        const yaw = cmd.yaw != null ? cmd.yaw : state.rotationY;
+        const sprint = !!cmd.sprint;
+        const jump = !!cmd.jump;
+
+        // Dirección de avance en el mundo (relativa a la cámara).
+        const sinY = Math.sin(yaw);
+        const cosY = Math.cos(yaw);
+        let dirX = sinY * moveZ - cosY * moveX;
+        let dirZ = cosY * moveZ + sinY * moveX;
+        const length = Math.hypot(dirX, dirZ);
+        const moving = length > 1e-3;
+        if (length > 1) {
+            dirX /= length;
+            dirZ /= length;
+        }
+
+        // Orientación del cuerpo: hacia donde camina, o la forzada (patear, primera persona).
+        let rotationY = state.rotationY;
+        const targetYaw = cmd.faceYaw != null ? cmd.faceYaw : moving ? Math.atan2(dirX, dirZ) : null;
+        if (targetYaw != null) {
+            const delta = wrapAngle(targetYaw - rotationY);
+            const maxStep = FACE_TURN_SPEED * dt;
+            rotationY += cmd.snap || Math.abs(delta) <= maxStep ? delta : Math.sign(delta) * maxStep;
+            rotationY = wrapAngle(rotationY);
+        }
 
         let vy = state.vy;
         let isGrounded = state.isGrounded;
@@ -309,9 +338,8 @@ export class Player {
 
         const speed = (sprint ? SPRINT_SPEED : WALK_SPEED) * speedMultiplier;
         const control = isGrounded ? 1 : AIR_CONTROL;
-        const step = forward * speed * control * dt;
-        const x = state.x + Math.sin(rotationY) * step;
-        const z = state.z + Math.cos(rotationY) * step;
+        const x = state.x + dirX * speed * control * dt;
+        const z = state.z + dirZ * speed * control * dt;
         // Seguir el relieve: pegado al suelo al caminar, aterrizar si cae bajo él.
         if (groundFn) {
             const groundThere = groundFn(x, z);
@@ -330,14 +358,14 @@ export class Player {
             rotationY,
             vy,
             isGrounded,
-            isMoving: forward !== 0,
-            isSprinting: sprint && forward !== 0,
+            isMoving: moving,
+            isSprinting: sprint && moving,
         };
     }
 
-    update(dt, input, groundFn = null) {
+    update(dt, cmd, groundFn = null) {
         const wasGrounded = this.state.isGrounded;
-        this.state = Player.simulateStep(this.state, input, dt, this.speedMultiplier, groundFn);
+        this.state = Player.simulateStep(this.state, cmd, dt, this.speedMultiplier, groundFn);
         const lift = this.riding ? RIDE_LIFT : 0;
         this.group.position.set(this.state.x, this.state.y + lift, this.state.z);
         this.group.rotation.y = this.state.rotationY + this.facingOffset;
@@ -499,4 +527,16 @@ function makeFaceTexture() {
 
 function clamp(value, limit) {
     return value > limit ? limit : value < -limit ? -limit : value;
+}
+
+function clampUnit(value) {
+    return value > 1 ? 1 : value < -1 ? -1 : value;
+}
+
+// Normaliza un ángulo a (-π, π].
+function wrapAngle(angle) {
+    let a = angle % (Math.PI * 2);
+    if (a > Math.PI) a -= Math.PI * 2;
+    else if (a <= -Math.PI) a += Math.PI * 2;
+    return a;
 }

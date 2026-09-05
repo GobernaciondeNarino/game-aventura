@@ -5,7 +5,14 @@
 import { Group } from 'three';
 import { box, cyl, cone, sphere, PALETTE } from './primitives.js';
 import { FOREST } from './worldLayout.js';
+import { SITES } from './sitesData.js';
 import { heightAt, isWaterAt } from '../environment/terrainMath.js';
+
+// El Morro de Tumaco ocupa un tramo de la playa: no se colocan props encima.
+const MORRO = SITES.find((s) => s.id === 'morro');
+function nearMorro(x, z, margin = 22) {
+  return MORRO ? Math.hypot(x - MORRO.position.x, z - MORRO.position.z) < margin : false;
+}
 
 // Colores de roca.
 const ROCK = 9080729;
@@ -64,12 +71,14 @@ function addBeach(parent, colliders) {
     const x = 212 + Math.random() * 34;
     const z = -200 + Math.random() * 400;
     if (x < 218 && Math.abs(z) < 9) continue; // deja libre el final de la vía del este
+    if (nearMorro(x, z)) continue;
     addPalm(parent, x, z);
     colliders.push({ x, z, r: .5 });
   }
   for (const z of [-180, -120, -50, 30, 100, 170]) addBeachHut(parent, colliders, 232, z);
   for (let i = 0; i < 18; i++) {
     const z = -190 + i * 22 + (Math.random() - .5) * 4;
+    if (nearMorro(240, z, 26)) continue;
     addSunbed(parent, colliders, 238 + Math.random() * 4, z);
     addSunbed(parent, colliders, 244 + Math.random() * 3, z + 3);
   }

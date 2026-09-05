@@ -18,6 +18,21 @@ import { LAKES, RIVER, WATERFALL, SEA_LEVEL, BEACH } from '../world/worldLayout.
 import { heightAt } from './terrainMath.js';
 import { makeWaterNormalTexture, makeWaterfallTexture, makeSoftParticleTexture } from './proceduralTextures.js';
 
+// Textura de normales compartida por todos los cuerpos de agua (perezosa).
+let sharedNormalTexture = null;
+export function getWaterNormalTexture() {
+  if (!sharedNormalTexture) sharedNormalTexture = makeWaterNormalTexture(512);
+  return sharedNormalTexture;
+}
+
+// Materiales de agua creados fuera de este módulo (lagunas cratéricas, pozas
+// termales, fuentes de las maquetas): se animan junto con los demás.
+const externalMaterials = [];
+export function registerWaterMaterial(material) {
+  externalMaterials.push(material);
+  return material;
+}
+
 // Sustituye la lectura del normal map por la mezcla animada de dos capas.
 const NORMAL_SAMPLE_ORIGINAL = 'vec3 mapN = texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0;';
 const NORMAL_SAMPLE_ANIMATED = /* glsl */ `
@@ -75,7 +90,7 @@ export class WaterBodies {
     this.group = new Group();
     this.group.name = 'water';
     scene.add(this.group);
-    this.normalTexture = makeWaterNormalTexture(512);
+    this.normalTexture = getWaterNormalTexture();
     this.simpleMaterials = [];
     this.time = 0;
     this.reflectionHide = reflectionHide;
@@ -153,26 +168,54 @@ export class WaterBodies {
   }
 
   _buildRiver() {
-    // Cinta que sigue la polilínea del río, a nivel del agua.
-    const points = RIVER.points.map((p) => ({ x: p.x, y: RIVER.level, z: p.z }));
-    const width = RIVER.halfWidth * 2 * 0.62;
-    const geometry = ribbonGeometry(points, width, 96);
-    // ribbonGeometry da u ∈ {0,1} y v en unidades de 3 m: escalar u para que sea métrico.
-    const uv = geometry.attributes.uv;
-    for (let i = 0; i < uv.count; i++) { uv.setX(i, uv.getX(i) * (width / 14)); uv.setY(i, uv.getY(i) * (3 / 14)); }
-    uv.needsUpdate = true;
-    const material = makeSimpleWaterMaterial(this.normalTexture, {
-      color: 0x2b6d8a,
-      opacity: 0.82,
-      flow: new Vector2(0.0, -0.12), // corriente hacia la laguna baja
-      normalScale: 0.3,
-    });
-    material.side = DoubleSide;
-    this.simpleMaterials.push(material);
-    const mesh = new Mesh(geometry, material);
-    mesh.name = 'river';
-    mesh.renderOrder = 2;
-    this.group.add(mesh);
+    // Cintas que siguen la polilínea del río a la cota de cada tramo: el
+    // cauce somero (ancho) y el fondo del cañón (más estrecho y profundo).
+    // Se muestrea densamente para que el agua siga la misma interpolación
+    // lineal de niveles que usa el terreno (riverSample).
+    const dense = [];
+    const pts = RIVER.points;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i];
+      const b = pts[i + 1];
+      const steps = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / 2));
+      for (let s = 0; s < steps; s++) {
+        const t = s / steps;
+        dense.push({
+          x: a.x + (b.x - a.x) * t,
+          z: a.z + (b.z - a.z) * t,
+          y: a.level + (b.level - a.level) * t + 0.03,
+          canyon: a.canyon + (b.canyon - a.canyon) * t,
+        });
+      }
+    }
+    const last = pts[pts.length - 1];
+    dense.push({ x: last.x, z: last.z, y: last.level + 0.03, canyon: last.canyon });
+
+    const splitAt = dense.findIndex((p) => p.canyon >= 0.5);
+    const parts = [
+      { points: dense.slice(0, splitAt + 1), width: RIVER.halfWidth * 2 * 0.62, color: 0x2b6d8a, flow: -0.12 },
+      { points: dense.slice(Math.max(0, splitAt)), width: RIVER.canyonHalfWidth * 2 * 0.92, color: 0x1f5d78, flow: -0.16 },
+    ];
+    for (const part of parts) {
+      if (part.points.length < 2) continue;
+      const geometry = ribbonGeometry(part.points, part.width, part.points.length * 2);
+      // ribbonGeometry da u ∈ {0,1} y v en unidades de 3 m: escalar u para que sea métrico.
+      const uv = geometry.attributes.uv;
+      for (let i = 0; i < uv.count; i++) { uv.setX(i, uv.getX(i) * (part.width / 14)); uv.setY(i, uv.getY(i) * (3 / 14)); }
+      uv.needsUpdate = true;
+      const material = makeSimpleWaterMaterial(this.normalTexture, {
+        color: part.color,
+        opacity: 0.84,
+        flow: new Vector2(0.0, part.flow), // corriente hacia la laguna baja
+        normalScale: 0.3,
+      });
+      material.side = DoubleSide;
+      this.simpleMaterials.push(material);
+      const mesh = new Mesh(geometry, material);
+      mesh.name = 'river';
+      mesh.renderOrder = 2;
+      this.group.add(mesh);
+    }
   }
 
   _buildWaterfall() {
@@ -254,6 +297,7 @@ export class WaterBodies {
     this.time += dt;
     if (this.seaIsReflective) this.sea.material.uniforms.time.value += dt * 0.6;
     for (const m of this.simpleMaterials) m.userData.uniforms.uTime.value = this.time;
+    for (const m of externalMaterials) m.userData.uniforms.uTime.value = this.time;
     for (const w of this.waterfallTextures) w.texture.offset.y -= dt * w.speed;
     for (const s of this.mist) {
       const u = s.userData;

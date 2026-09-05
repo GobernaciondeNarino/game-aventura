@@ -1,6 +1,9 @@
 // Controles táctiles para móviles y tablets: un joystick virtual a la izquierda
-// que emula WASD y una botonera a la derecha que emula Espacio/Shift/E/F/G/H.
-// Todo se traduce a llamadas `input.setVirtual(code, pressed)` del InputManager.
+// que emula WASD (movimiento relativo a la cámara), una botonera a la derecha
+// que emula Espacio/Shift/E/F/G/H/C/B y una zona de arrastre (mitad derecha de
+// la pantalla) que gira la cámara. Las teclas se traducen a llamadas
+// `input.setVirtual(code, pressed)` del InputManager; el giro se lee con
+// `consumeLook()`.
 
 /** Botones de la botonera: [código de tecla emulado, etiqueta visible]. */
 const PAD_BUTTONS = [
@@ -10,6 +13,9 @@ const PAD_BUTTONS = [
   ['KeyF', 'F'],
   ['KeyG', 'G'],
   ['KeyH', 'H'],
+  ['KeyC', '📷'],
+  ['KeyB', 'B'],
+  ['KeyF', 'Patear'],
 ];
 
 /** Teclas de movimiento que gobierna el joystick. */
@@ -49,6 +55,37 @@ export class TouchControls {
     `;
     this.base.appendChild(this.knob);
     parent.appendChild(this.base);
+
+    // Zona de arrastre para girar la cámara (mitad derecha, debajo de los botones).
+    this._lookDx = 0;
+    this._lookDy = 0;
+    this._lookId = null;
+    this._lookLast = null;
+    this.lookZone = document.createElement('div');
+    this.lookZone.style.cssText = `
+      position:absolute; left:50%; top:0; right:0; bottom:0;
+      pointer-events:auto; z-index:20; touch-action:none;
+    `;
+    parent.appendChild(this.lookZone);
+    this.lookZone.addEventListener('pointerdown', (event) => {
+      if (this._lookId !== null) return;
+      this._lookId = event.pointerId;
+      this._lookLast = { x: event.clientX, y: event.clientY };
+      this.lookZone.setPointerCapture?.(event.pointerId);
+    });
+    this.lookZone.addEventListener('pointermove', (event) => {
+      if (event.pointerId !== this._lookId || !this._lookLast) return;
+      this._lookDx += event.clientX - this._lookLast.x;
+      this._lookDy += event.clientY - this._lookLast.y;
+      this._lookLast = { x: event.clientX, y: event.clientY };
+    });
+    const endLook = (event) => {
+      if (event.pointerId !== this._lookId) return;
+      this._lookId = null;
+      this._lookLast = null;
+    };
+    this.lookZone.addEventListener('pointerup', endLook);
+    this.lookZone.addEventListener('pointercancel', endLook);
 
     this._joyId = null;
     this.base.addEventListener('pointerdown', (event) => this._joyStart(event));
@@ -136,5 +173,13 @@ export class TouchControls {
 
   _set(code, pressed) {
     this.input.setVirtual(code, pressed);
+  }
+
+  /** Devuelve y reinicia el desplazamiento (px) acumulado del arrastre de cámara. */
+  consumeLook() {
+    const result = { dx: this._lookDx, dy: this._lookDy };
+    this._lookDx = 0;
+    this._lookDy = 0;
+    return result;
   }
 }

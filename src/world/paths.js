@@ -1,11 +1,12 @@
-// Plaza central, senderos radiales hacia cada sitio y los "props" decorativos
-// que los bordean (árboles, pinos, rocas, farolas, barcas, bancos, casas...).
-// También construye el cartel de bienvenida "¡Esto es Nariño!".
+// Plaza central, senderos radiales hacia cada sitio (cintas que siguen el
+// relieve: suben en rampa hasta la terraza de cada sitio y, en los volcanes,
+// continúan como sendero de tierra por la ladera) y los "props" decorativos que
+// los bordean (árboles, pinos, rocas, farolas, bancos...). También construye el
+// cartel de bienvenida "¡Esto es Nariño!".
 import {
   Group,
   Mesh,
   RingGeometry,
-  BoxGeometry,
   PlaneGeometry,
   MeshStandardMaterial,
   MeshBasicMaterial,
@@ -15,25 +16,32 @@ import {
   CanvasTexture,
 } from 'three';
 import { box, cyl, cone, sphere, block, PALETTE } from './primitives.js';
-import { SITES } from './sitesData.js';
+import { SITES, sitePathEnd } from './sitesData.js';
+import { PLAZA, RING_ROAD_RADIUS } from './worldLayout.js';
+import { ribbonMesh } from './ribbon.js';
+import { heightAt, isWaterAt, slopeAt } from '../environment/terrainMath.js';
+import { getNoiseTexture } from '../environment/proceduralTextures.js';
 
-const PLAZA_INNER = 17;
-const PLAZA_RADIUS = 24;
-const PATH_START = 23;
-const PATH_WIDTH = 3.2;
+const PLAZA_INNER = PLAZA.innerRadius;
+const PLAZA_RADIUS = PLAZA.outerRadius;
+const PATH_START = PLAZA.pathStart;
+const PATH_WIDTH = PLAZA.pathWidth;
+const TRAIL_WIDTH = 2.4;
+// Altura de la cinta sobre el terreno (las vías van a .05; el sendero queda debajo en los cruces).
+const PATH_LIFT = 0.04;
 
-// Configuración de props por sitio: tipos, cantidad, ambos lados, canales de agua e inset.
+// Configuración de props por sitio: tipos, ambos lados e inset lateral.
 const SITE_PROP_CONFIG = {
-  lajas: { props: ['lamppost'], count: 7, bothSides: true, water: true, propInset: 2.8 },
-  cocha: { props: ['boat', 'reed'], count: 6, water: true, propInset: 7.6 },
-  galeras: { props: ['pine', 'rock'], count: 7 },
-  cumbal: { props: ['pine', 'rock'], count: 7 },
-  chiles: { props: ['pine', 'rock'], count: 7 },
-  azufral: { props: ['rock', 'pine'], count: 6 },
-  catedral: { props: ['lamppost', 'bench'], count: 7, bothSides: true },
-  planada: { props: ['tree', 'pine', 'tree'], count: 9 },
-  morro: { props: ['palm', 'boat'], count: 6 },
-  sandona: { props: ['house', 'hatStand'], count: 6 },
+  lajas: { props: ['lamppost', 'bench'], bothSides: true, propInset: 2.6 },
+  cocha: { props: ['pine', 'tree', 'rock'] },
+  galeras: { props: ['pine', 'rock'] },
+  cumbal: { props: ['pine', 'rock'] },
+  chiles: { props: ['pine', 'rock'] },
+  azufral: { props: ['rock', 'pine'] },
+  catedral: { props: ['lamppost', 'tree'], bothSides: true },
+  planada: { props: ['tree', 'pine', 'tree'] },
+  morro: { props: ['palm', 'rock'] },
+  sandona: { props: ['tree', 'bench'] },
 };
 
 // Radio de colisión de cada tipo de prop (0 = sin colisión).
@@ -58,17 +66,22 @@ export function buildPaths(scene, sites = SITES) {
   addPlaza(root);
   addWelcomeSign(root);
   const pavementTexture = makePavementTexture();
+  const trailMaterial = makeTrailMaterial();
   for (const site of sites) {
-    const config = SITE_PROP_CONFIG[site.id] || { props: ['tree', 'rock'], count: 5 };
+    const config = SITE_PROP_CONFIG[site.id] || { props: ['tree', 'rock'] };
     const direction = new Vector2(site.position.x, site.position.z);
     const distance = direction.length();
     direction.normalize();
-    const pathLength = distance - (site.solidRadius || 8) - 1 - PATH_START;
-    if (pathLength <= 2) continue;
-    addPath(root, direction, pathLength, pavementTexture);
-    if (config.water) addCanals(root, direction, pathLength, colliders);
-    addPropsAlongPath(root, config, direction, pathLength, colliders);
-    addPropsAroundSite(root, site, config, colliders);
+    const end = sitePathEnd(site);
+    if (end - PATH_START <= 2) continue;
+    const cone = site.terrain?.cone;
+    const coneStart = cone ? Math.min(end, distance - cone.radius) : end;
+    // Tramo pavimentado (de la plaza al pie del sitio o del cono).
+    addRibbon(root, direction, PATH_START, coneStart, PATH_WIDTH, makePathMaterial(pavementTexture, coneStart - PATH_START));
+    // Tramo de sendero de tierra que sube el volcán.
+    if (cone && end > coneStart + 2) addRibbon(root, direction, coneStart - 1, end, TRAIL_WIDTH, trailMaterial);
+    addPropsAlongPath(root, config, direction, PATH_START, coneStart, colliders);
+    if (cone) addPropsAlongPath(root, { props: ['rock'], propInset: TRAIL_WIDTH / 2 + 1.2, spacing: 9 }, direction, coneStart, end, colliders);
   }
   scene.add(root);
   return { root, colliders };
@@ -89,79 +102,52 @@ function addPlaza(parent) {
   parent.add(ring);
 }
 
-// Sendero recto desde la plaza hacia un sitio (direction es un Vector2 unitario x/z).
-function addPath(parent, direction, length, baseTexture) {
+// Material del pavimento de un sendero de longitud dada (repite la baldosa cada ~1.6 m).
+function makePathMaterial(baseTexture, length) {
   const texture = baseTexture.clone();
   texture.needsUpdate = true;
   texture.wrapS = texture.wrapT = RepeatWrapping;
-  texture.repeat.set(2, Math.max(2, Math.round(length / 2)));
-  const path = new Mesh(
-    new BoxGeometry(PATH_WIDTH, .16, length),
-    new MeshStandardMaterial({ map: texture, color: 15922165, roughness: .95 }),
-  );
-  path.rotation.y = Math.atan2(direction.x, direction.y);
-  const center = PATH_START + length / 2;
-  path.position.set(direction.x * center, .08, direction.y * center);
-  path.receiveShadow = true;
-  parent.add(path);
+  // ribbonGeometry da v en unidades de 3 m: 1.8 repeticiones por unidad ≈ una baldosa cada 1.6 m.
+  texture.repeat.set(2, 1.8);
+  return new MeshStandardMaterial({ map: texture, color: 15922165, roughness: .95 });
 }
 
-// Canales de agua a ambos lados del sendero, con barandilla junto al camino.
-function addCanals(parent, direction, length, colliders) {
-  const side = new Vector2(direction.y, -direction.x);
-  const center = PATH_START + length / 2;
-  const angle = Math.atan2(direction.x, direction.y);
-  for (const sign of [1, -1]) {
-    const offset = PATH_WIDTH / 2 + 6;
-    const water = new Mesh(
-      new BoxGeometry(7, .3, length),
-      new MeshStandardMaterial({
-        color: PALETTE.waterBlue,
-        roughness: .2,
-        metalness: .3,
-        transparent: true,
-        opacity: .85,
-      }),
-    );
-    water.rotation.y = angle;
-    water.position.set(
-      direction.x * center + side.x * offset * sign,
-      -.02,
-      direction.y * center + side.y * offset * sign,
-    );
-    parent.add(water);
-    addCanalRail(parent, direction, side, length, (PATH_WIDTH / 2 + .2) * sign, colliders);
-  }
+// Material de sendero de tierra para las laderas volcánicas.
+function makeTrailMaterial() {
+  const texture = getNoiseTexture(256).clone();
+  texture.needsUpdate = true;
+  texture.wrapS = texture.wrapT = RepeatWrapping;
+  texture.repeat.set(1, 1.2);
+  return new MeshStandardMaterial({ map: texture, color: 0xb59470, roughness: 1 });
 }
 
-// Barandilla: postes blancos (con colisión) y travesaño dorado.
-function addCanalRail(parent, direction, side, length, offset, colliders) {
-  const angle = Math.atan2(direction.x, direction.y);
-  const postCount = Math.max(2, Math.floor(length / 3));
-  for (let i = 0; i <= postCount; i++) {
-    const along = PATH_START + length * i / postCount;
-    const x = direction.x * along + side.x * offset;
-    const z = direction.y * along + side.y * offset;
-    const post = box(.16, 1, .16, PALETTE.white);
-    post.position.set(x, .5, z);
-    parent.add(post);
-    colliders.push({ x, z, r: .3 });
+// Cinta que sigue el terreno entre dos distancias radiales (a lo largo de `direction`).
+function addRibbon(parent, direction, from, to, width, material) {
+  const points = [];
+  const steps = Math.max(4, Math.ceil((to - from) / 2.5));
+  for (let i = 0; i <= steps; i++) {
+    const along = from + (to - from) * i / steps;
+    const x = direction.x * along;
+    const z = direction.y * along;
+    points.push({ x, y: heightAt(x, z) + PATH_LIFT, z });
   }
-  const rail = box(.1, .12, length, PALETTE.gold);
-  rail.rotation.y = angle;
-  const center = PATH_START + length / 2;
-  rail.position.set(direction.x * center + side.x * offset, .85, direction.y * center + side.y * offset);
-  parent.add(rail);
+  const mesh = ribbonMesh(points, width, material, steps);
+  mesh.receiveShadow = true;
+  mesh.name = 'path';
+  parent.add(mesh);
 }
 
 // Props repartidos a lo largo del sendero, alternando lado (o ambos lados).
-function addPropsAlongPath(parent, config, direction, length, colliders) {
+function addPropsAlongPath(parent, config, direction, from, to, colliders) {
   const side = new Vector2(direction.y, -direction.x);
-  const count = config.count || 5;
+  const spacing = config.spacing || 11;
+  const count = Math.max(2, Math.round((to - from) / spacing));
   const inset = config.propInset ?? PATH_WIDTH / 2 + 1.4;
   for (let i = 0; i < count; i++) {
     const t = (i + .5) / count;
-    const along = PATH_START + t * length;
+    const along = from + t * (to - from);
+    // deja libre la circunvalar y su acera
+    if (Math.abs(along - RING_ROAD_RADIUS) < 6) continue;
     const kind = config.props[i % config.props.length];
     const sides = config.bothSides ? [1, -1] : [i % 2 === 0 ? 1 : -1];
     for (const sign of sides) {
@@ -172,29 +158,11 @@ function addPropsAlongPath(parent, config, direction, length, colliders) {
   }
 }
 
-// Props en círculo alrededor del sitio, dejando libre el lado que mira a la plaza.
-function addPropsAroundSite(parent, site, config, colliders) {
-  const centerX = site.position.x;
-  const centerZ = site.position.z;
-  const baseRadius = (site.solidRadius || 8) + 3;
-  const towardPlaza = Math.atan2(-centerX, -centerZ);
-  const count = 7;
-  for (let i = 0; i < count; i++) {
-    const angle = i / count * Math.PI * 2;
-    if (Math.abs((angle - towardPlaza + Math.PI * 3) % (Math.PI * 2) - Math.PI) < .6) continue;
-    const radius = baseRadius + i % 2 * 2;
-    const x = centerX + Math.sin(angle) * radius;
-    const z = centerZ + Math.cos(angle) * radius;
-    const kind = config.props[i % config.props.length];
-    if (kind === 'boat' || kind === 'reed') continue;
-    placeProp(parent, kind, x, z, colliders);
-  }
-}
-
-// Coloca un prop con rotación aleatoria y registra su colisión si procede.
+// Coloca un prop apoyado en el terreno (si no hay agua ni pendiente fuerte) y registra su colisión.
 function placeProp(parent, kind, x, z, colliders) {
+  if (isWaterAt(x, z) || slopeAt(x, z) > 0.75) return;
   const prop = buildProp(kind);
-  prop.position.set(x, 0, z);
+  prop.position.set(x, heightAt(x, z), z);
   prop.rotation.y = Math.random() * Math.PI * 2;
   parent.add(prop);
   const radius = PROP_RADIUS[kind] ?? 0;
