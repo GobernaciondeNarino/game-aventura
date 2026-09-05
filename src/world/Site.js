@@ -18,14 +18,13 @@ export class Site {
   /**
    * @param {object} data datos del sitio (sitesData)
    * @param {import('three').Group} group maqueta construida (marco local)
-   * @param {(x:number, z:number) => number} [groundFn] cota del terreno
+   * @param {number} [baseY] cota (m) del origen de la maqueta
    */
-  constructor(data, group, groundFn = null) {
+  constructor(data, group, baseY = 0) {
     this.id = data.id;
     this.name = data.name;
     this.municipio = data.municipio;
     this.description = data.description;
-    const baseY = groundFn ? groundFn(data.position.x, data.position.z) : 0;
     this.position = new Vector3(data.position.x, baseY, data.position.z);
     this.proximityRadius = data.proximityRadius;
     this.solidRadius = data.solidRadius;

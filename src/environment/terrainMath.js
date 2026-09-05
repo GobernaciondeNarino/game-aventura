@@ -440,7 +440,8 @@ export function surfaceAt(x, z) {
   for (const p of SITE_PATHS) {
     const d = segmentDistance(x, z, p.ax, p.az, p.bx, p.bz);
     const radial = x * p.ux + z * p.uz;
-    const paved = 1 - smoothstep(p.coneStart - 8, p.coneStart, radial);
+    // (coneStart = Infinity en sitios sin cono: pavimento hasta el final)
+    const paved = Number.isFinite(p.coneStart) ? 1 - smoothstep(p.coneStart - 8, p.coneStart, radial) : 1;
     hard = Math.max(hard, softMask(Math.max(0, d - p.hardHalfWidth), 0.8) * paved);
     dirt = Math.max(dirt, softMask(Math.max(0, d - p.hardHalfWidth), 3.5) * (0.7 + 0.25 * (1 - paved)));
   }
