@@ -16,6 +16,9 @@ Escrito para el equipo de la Secretaría TIC / hosting de la Gobernación de Nar
 | Cielo/luz | Gradiente + luz fija | Cielo físico (Preetham), mapa de entorno PBR, sol con sombras que siguen al jugador, niebla, nubes |
 | Postprocesado | Ninguno | Oclusión ambiental (N8AO), SMAA, bloom, viñeta, tone mapping ACES |
 | Jugadores | Uno | Multijugador P2P (sin servidor) con avatares, nombres y chat; relay opcional |
+| Relieve jugable | Todo a cota 0 | Niveles: terrazas por sitio con rampas, cañón del río de 12 m, cuatro volcanes escalables con sendero |
+| Sitios turísticos | Maquetas de bloques de ~10 m | Diez maquetas rediseñadas según la forma real (arcos, torres, cúpulas, cráteres, agua animada, vapor) integradas al relieve |
+| Controles | Tanque (A/D giran, W/S avanzan) | Videojuego: ratón dirige la cámara (Pointer Lock), flechas relativas a la cámara, C cambia de cámara, clics para patear/agarrar |
 | Hosting | Estático | Sigue siendo estático: `index.html + assets/ + mp3` |
 
 Toda la jugabilidad original se conserva: preguntas por sitio, pistas de los
@@ -94,6 +97,72 @@ del fondo bajo el agua. Normal map y ruido tileables generados en tiempo de carg
 - La cámara nunca se hunde en el terreno (`CameraRig.clampAboveGround`).
 - Colisionadores circulares indexados en una rejilla espacial
   (`core/collision.js → ColliderIndex`) para soportar más de mil árboles.
+
+### 3.5 Niveles del terreno
+
+El relieve jugable ya no está todo a cota 0. `padHeightAt(x, z)` devuelve una
+máscara y una **cota objetivo ponderada** de todas las zonas planas:
+
+- Las estructuras urbanas (plaza, vías, glorietas, parque deportivo, laberinto,
+  tienda) siguen a cota 0 (`structureMask`).
+- Cada sitio turístico tiene una **terraza** (`padRadius`) a su `elevation`
+  (La Planada 4 m, Sandoná 6 m, Azufral 10 m, Chiles 12 m, Galeras 14 m,
+  Cumbal 16 m…).
+- El **sendero** de cada sitio es una cápsula cuya cota sube en rampa
+  (`smoothstep`) desde la circunvalar (`PATH_RAMP_START = 110 m`) hasta la
+  terraza, de modo que el camino pavimentado nunca supera la pendiente
+  transitable.
+- Los **volcanes** (`terrain.cone`) son conos añadidos sobre la terraza,
+  protegidos por la máscara de estructuras. Como la ladera supera los 42°
+  transitables, una **cresta de pendiente constante** orientada hacia la plaza
+  (`volcanoesAt`) hace de sendero de subida; `paths.js` la dibuja como cinta de
+  tierra y `surfaceAt` deja de pavimentar al pie del cono. Azufral tiene la
+  cumbre truncada en meseta con un **cráter** excavado (`terrain.crater`) donde
+  se aloja la laguna.
+- El **río** lleva ahora una cota por vértice (`RIVER.points[i].level`):
+  nace a −0,55 m en la poza de la cascada, baja por rápidos a −4 m y se
+  encajona (`canyon` 0→1) en un **cañón** de paredes casi verticales
+  (`canyonHalfWidth`/`canyonRim`) a −12,5 m bajo el Santuario de Las Lajas,
+  hasta la **laguna baja** (`LAKES[].wall = true`). `waterLevelAt` devuelve el
+  nivel propio de cada cuerpo de agua. `buildGuardColliders()` genera
+  colisionadores a lo largo del cañón y de la laguna baja para que nadie caiga
+  en ellos.
+
+### 3.6 Sitios turísticos
+
+`world/sitesData.js` reubica los diez sitios sobre el nuevo relieve (Las Lajas
+en el borde del cañón, La Cocha en la orilla del gran lago del nordeste con la
+Isla La Corota dentro del agua, la Catedral dentro de la circunvalar, El Morro
+en la playa, los volcanes en sus conos). `SiteManager` construye cada maqueta
+con un **contexto** (`ctx.groundAt(lx, lz)`, `ctx.waterAt`, `ctx.colliders`,
+`ctx.tickers`) que da la cota local del terreno en el marco de la maqueta:
+así las piezas se apoyan en laderas, orillas y cumbres.
+
+`world/siteParts.js` aporta piezas reutilizables: muros con arcos de medio
+punto o apuntados (`Shape` con agujeros + `ExtrudeGeometry`), techos a dos y
+cuatro aguas, cúpulas con linterna, agujas, columnas, escalinatas,
+balaustradas, ventanas y rosetones, texturas procedurales (sillería, teja,
+revoque, madera), "pieles" que siguen el terreno (nieve, azufre, ceniza),
+bordes de cráter, espejos de agua animados (registrados en `WaterBodies` para
+compartir la animación), vapor/humo por sprites, frailejones, lanchas, muelles,
+palmeras y carteles. `world/siteBuilders.js` compone con ellas las diez
+maquetas guiándose por la forma y estructura reales de cada lugar.
+
+### 3.7 Controles
+
+- `core/MouseLook.js`: Pointer Lock sobre el lienzo; acumula `movementX/Y`,
+  registra los flancos de los botones y anula el menú contextual.
+- `core/CameraRig.js`: cámara orbital con `yaw`/`pitch` y tres modos (tecla C):
+  tercera persona (7,5 m), panorámica (14 m) y primera persona (oculta el
+  cuerpo y la capa). Acorta la distancia si el terreno se interpone y nunca
+  baja del suelo.
+- `Player.simulateStep(state, cmd, dt)`: la orden `cmd` es relativa a la
+  cámara (`moveZ`, `moveX`, `yaw`); el cuerpo se orienta suavemente hacia
+  donde camina y de inmediato hacia la cámara al patear, agarrar o en primera
+  persona. Sin ratón capturado, ← → giran la cámara (control clásico).
+- Clic izquierdo = F (patear/lanzar) y clic derecho = G (agarrar/soltar), en la
+  dirección de la cámara. En táctil, la mitad derecha de la pantalla gira la
+  cámara y la botonera incluye 📷 y B.
 
 ## 4. Atmósfera e iluminación
 
@@ -232,10 +301,16 @@ con interpolación exponencial, etiqueta de nombre y burbuja de chat. El panel
 
 ## 13. Verificación
 
-- Build de Vite sin errores (107 módulos).
-- Pruebas de humo en Chromium headless (SwiftShader) para los tres perfiles:
-  sin errores de ejecución ni de compilación de shaders; capturas del recorrido
-  (plaza, laguna, cascada, playa, costa, río, bosque, cordillera) revisadas.
+- Build de Vite sin errores (130 módulos).
+- Pruebas de humo en Chromium headless (SwiftShader): sin errores de ejecución
+  ni de compilación de shaders; capturas de los diez sitios y de las vistas
+  panorámicas (cañón de Las Lajas, conos del Galeras y del Cumbal, cráter del
+  Azufral, lago de La Cocha) revisadas — ver `docs/capturas/`.
+- Prueba determinista de controles (bucle avanzado a mano con `g.update(1/60)`):
+  avance relativo a la cámara (+6 m en 1,5 s), giro con → sin ratón, desplazamiento
+  lateral con ratón capturado, giro por deltas de ratón, ciclo de modos con C
+  (primera persona oculta el cuerpo), clic derecho → agarrar, clic izquierdo
+  con puntero capturado → patear, y empuje de los colisionadores del cañón.
 - Advertencias conocidas: `THREE.Clock` marcado como obsoleto (sin impacto).
 
 ## 14. Rendimiento y recomendaciones
@@ -253,3 +328,4 @@ con interpolación exponencial, etiqueta de nombre y burbuja de chat. El panel
 3. Migración progresiva a `WebGPURenderer` + TSL cuando postprocessing lo soporte.
 4. Sonidos ambientales (viento, agua, aves) ligados a la posición.
 5. Integrar las guías de identidad visual de la Gobernación en el HUD.
+6. Permitir cruzar a pie el puente de Las Lajas (colisión por altura del tablero).

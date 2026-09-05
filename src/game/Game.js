@@ -5,10 +5,11 @@
 // (balones, NPCs, fauna, patineta, progreso, inventario, ranking) y el HUD.
 // Ejecuta el bucle de render y coordina puntuación, preguntas y eventos.
 
-import { Scene, WebGLRenderer, PCFShadowMap, Vector3, Clock } from 'three';
+import { Scene, WebGLRenderer, PCFShadowMap, Clock } from 'three';
 
 import { InputManager } from '../core/InputManager.js';
 import { CameraRig } from '../core/CameraRig.js';
+import { MouseLook } from '../core/MouseLook.js';
 import { ColliderIndex, resolveCircles } from '../core/collision.js';
 
 import { Player } from '../entities/Player.js';
@@ -26,11 +27,11 @@ import { SiteManager } from '../world/SiteManager.js';
 import { Scoreboard } from '../world/Scoreboard.js';
 import { Shop } from '../world/Shop.js';
 import { clampToWorld } from '../world/worldBounds.js';
-import { MAZE, SKATE_SPAWN } from '../world/worldLayout.js';
+import { MAZE, SKATE_SPAWN, buildGuardColliders } from '../world/worldLayout.js';
 
 import { detectQuality, bakeWorkerCount } from '../environment/quality.js';
 import { buildTerrain, heightAt } from '../environment/Terrain.js';
-import { MAP_HALF } from '../environment/terrainMath.js';
+import { MAP_HALF, waterLevelAt } from '../environment/terrainMath.js';
 import { Atmosphere } from '../environment/Atmosphere.js';
 import { Grass } from '../environment/Grass.js';
 import { Trees } from '../environment/Trees.js';
@@ -55,6 +56,7 @@ import { QuestionPanel } from '../ui/QuestionPanel.js';
 import { AudioToggle } from '../ui/AudioToggle.js';
 import { Toast } from '../ui/Toast.js';
 import { ControlsHint } from '../ui/ControlsHint.js';
+import { PointerHint } from '../ui/PointerHint.js';
 import { Minimap } from '../ui/Minimap.js';
 import { FaunaCard } from '../ui/FaunaCard.js';
 import { InfoButton } from '../ui/InfoButton.js';
@@ -78,8 +80,11 @@ const MAZE_TOAST_MS = 6e3;
 const SKATE_UNLOCK_TOAST_DELAY_MS = 4e3;
 // Pendiente máxima que el jugador puede subir (subida / avance horizontal ≈ 42°).
 const MAX_CLIMB = 0.9;
-// Altura mínima de la cámara sobre el terreno.
-const CAMERA_CLEARANCE = 1.1;
+// Sensibilidad del ratón y del arrastre táctil para girar la cámara (rad/px).
+const MOUSE_SENSITIVITY = 0.0022;
+const TOUCH_LOOK_SENSITIVITY = 0.006;
+// Velocidad de giro con las flechas ← → cuando el ratón no dirige la cámara (rad/s).
+const KEY_TURN_SPEED = 2.2;
 
 export class Game {
   constructor(canvas) {
@@ -93,15 +98,13 @@ export class Game {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = PCFShadowMap;
 
-    // Cámara en tercera persona que sigue al jugador.
-    this.cameraRig = new CameraRig({
-      aspect: window.innerWidth / window.innerHeight,
-      far: 2200,
-      offset: new Vector3(0, 4, -7),
-      lookOffset: new Vector3(0, 1.5, 0),
-    });
+    // Cámara orbital (ratón / arrastre / flechas) con tres modos (tecla C).
+    this.cameraRig = new CameraRig({ aspect: window.innerWidth / window.innerHeight, far: 2200 });
     this.camera = this.cameraRig.camera;
     this.input = new InputManager(window);
+    this.mouseLook = new MouseLook(canvas);
+    this._firstPerson = false;
+    this._capeWasVisible = false;
     this.clock = new Clock();
 
     // Cielo físico, sol con sombras, niebla, mapa de entorno y nubes.
@@ -118,7 +121,7 @@ export class Game {
 
     // Mundo: caminos, sitios turísticos, marcador, complejo deportivo, paisaje, carreteras y tienda.
     const paths = buildPaths(this.scene);
-    this.sites = new SiteManager(this.scene);
+    this.sites = new SiteManager(this.scene, { groundFn: heightAt, waterFn: waterLevelAt });
     this.scoreboard = new Scoreboard();
     this.scene.add(this.scoreboard.group);
     const sports = buildSportsComplex(this.scene);
@@ -131,6 +134,7 @@ export class Game {
     // indexados espacialmente (los árboles se añaden en `init`).
     this.colliders = [
       ...this.sites.getColliders(),
+      ...buildGuardColliders(),
       ...paths.colliders,
       this.scoreboard.getCollider(),
       ...sports.colliders,
@@ -203,6 +207,8 @@ export class Game {
       groundFn: heightAt,
     });
     this.controlsHint = new ControlsHint(hud);
+    this.pointerHint = new PointerHint(hud);
+    if (isTouchDevice()) this.pointerHint.disable();
     this.minimap = new Minimap(hud, this.sites);
     this.fpsCounter = new FpsCounter(hud);
     this.sfx = new Sfx();
@@ -255,11 +261,12 @@ export class Game {
     this._gPrev = false;
     this._hPrev = false;
     this._bPrev = false;
+    this._cPrev = false;
 
     this._handleResize = () => this.resize(window.innerWidth, window.innerHeight);
     window.addEventListener('resize', this._handleResize);
     this.resize(window.innerWidth, window.innerHeight);
-    this.cameraRig.update(this.player.group, true);
+    this.cameraRig.update(this.player.group, 0, true, heightAt);
 
     // Función de altura del terreno, expuesta para depuración/pruebas.
     this.heightAt = heightAt;
@@ -318,8 +325,7 @@ export class Game {
     this.atmosphere.update(0, this._focus);
     this.trees.update(0, this._focus);
     this.grass.update(0, this._focus);
-    this.cameraRig.update(this.player.group, true);
-    this.cameraRig.clampAboveGround(heightAt, CAMERA_CLEARANCE);
+    this.cameraRig.update(this.player.group, 0, true, heightAt);
     this._setupMultiplayer();
     this._ready = true;
   }
@@ -368,7 +374,7 @@ export class Game {
       pants: pants?.color,
       cape: cape?.color,
       hat: hat?.type === 'none' ? null : { type: hat?.type, color: hat?.color },
-      capeVisible: this.player.cape.mesh.visible,
+      capeVisible: this._firstPerson ? this._capeWasVisible : this.player.cape.mesh.visible,
       score: this.progress.score,
       sites: this.progress.sitesCompleted,
     };
@@ -479,41 +485,45 @@ export class Game {
   // Actualización por frame: entrada, física del jugador, colisiones y sistemas.
   update(dt) {
     if (!this._ready) return;
-    const eDown = this.input.isPressed('KeyE');
-    const eEdge = eDown && !this._ePrev;
-    this._ePrev = eDown;
-    const fDown = this.input.isPressed('KeyF');
-    const fEdge = fDown && !this._fPrev;
-    this._fPrev = fDown;
-    const gDown = this.input.isPressed('KeyG');
-    const gEdge = gDown && !this._gPrev;
-    this._gPrev = gDown;
-    const hDown = this.input.isPressed('KeyH');
-    const hEdge = hDown && !this._hPrev;
-    this._hPrev = hDown;
-    const bDown = this.input.isPressed('KeyB');
-    const bEdge = bDown && !this._bPrev;
-    this._bPrev = bDown;
+    // Entrada: ratón (cámara + clics), arrastre táctil y flancos de teclas.
+    const look = this.mouseLook.consume();
+    const touchLook = this.touch ? this.touch.consumeLook() : null;
+    const eEdge = this._keyEdge('KeyE', '_ePrev');
+    const fEdge = this._keyEdge('KeyF', '_fPrev') || (look.locked && look.left);
+    const gEdge = this._keyEdge('KeyG', '_gPrev') || look.right;
+    const hEdge = this._keyEdge('KeyH', '_hPrev');
+    const bEdge = this._keyEdge('KeyB', '_bPrev');
+    const cEdge = this._keyEdge('KeyC', '_cPrev');
 
     this._updateEnvironment(dt);
+
+    const uiOpen = this.paused || Boolean(this.shopUI && this.shopUI.isOpen);
+    if (uiOpen && look.locked) this.mouseLook.unlock();
+    this.pointerHint.update(look.locked, uiOpen);
+    if (cEdge && !uiOpen) this._cycleCameraMode();
+
+    // El cursor da la dirección: el ratón capturado (o el arrastre táctil) gira la cámara.
+    if (look.locked && !uiOpen) this.cameraRig.rotate(-look.dx * MOUSE_SENSITIVITY, look.dy * MOUSE_SENSITIVITY);
+    if (touchLook && !uiOpen) this.cameraRig.rotate(-touchLook.dx * TOUCH_LOOK_SENSITIVITY, touchLook.dy * TOUCH_LOOK_SENSITIVITY);
 
     // Pausa (pregunta abierta): solo se animan sitios y cámara.
     if (this.paused) {
       this.sites.update(dt, this.player.state.x, this.player.state.z);
-      this._updateCamera();
+      this._updateCamera(dt);
       return;
     }
     // Tienda abierta: solo se anima el tendero y la cámara.
     if (this.shopUI && this.shopUI.isOpen) {
       this.shop.update(dt);
-      this._updateCamera();
+      this._updateCamera(dt);
       return;
     }
 
     const prevX = this.player.state.x;
     const prevZ = this.player.state.z;
     const prevGround = heightAt(prevX, prevZ);
-    this.player.update(dt, this.input, heightAt);
+    const cmd = this._buildCommand(dt, look, fEdge || gEdge);
+    this.player.update(dt, cmd, heightAt);
 
     // Pendientes demasiado empinadas: el terreno actúa como muro natural.
     const moved = Math.hypot(this.player.state.x - prevX, this.player.state.z - prevZ);
@@ -566,12 +576,66 @@ export class Game {
     } else {
       this.controlsHint.hide();
     }
-    this._updateCamera();
+    this._updateCamera(dt);
   }
 
-  _updateCamera() {
-    this.cameraRig.update(this.player.group);
-    this.cameraRig.clampAboveGround(heightAt, CAMERA_CLEARANCE);
+  // Flanco de pulsación de una tecla (true solo en el frame en que se pulsa).
+  _keyEdge(code, prevKey) {
+    const down = this.input.isPressed(code);
+    const edge = down && !this[prevKey];
+    this[prevKey] = down;
+    return edge;
+  }
+
+  /**
+   * Traduce la entrada a una orden relativa a la cámara: ↑/W y ↓/S avanzan y
+   * retroceden hacia donde mira la cámara; ←/A y →/D se desplazan lateralmente
+   * cuando el ratón (o el táctil) dirige la cámara y, si no, la giran como en
+   * un control clásico. El cuerpo se orienta hacia donde camina; al patear,
+   * agarrar o en primera persona mira hacia donde apunta la cámara.
+   */
+  _buildCommand(dt, look, actionEdge) {
+    const input = this.input;
+    const forward = (input.isPressed('KeyW') ? 1 : 0) + (input.isPressed('KeyS') ? -1 : 0);
+    const side = (input.isPressed('KeyD') ? 1 : 0) + (input.isPressed('KeyA') ? -1 : 0);
+    const pointerControl = look.locked || Boolean(this.touch);
+    let moveX = 0;
+    if (pointerControl) moveX = side;
+    else if (side !== 0) this.cameraRig.rotate(-side * KEY_TURN_SPEED * dt, 0);
+    const yaw = this.cameraRig.yaw;
+    const firstPerson = Boolean(this.cameraRig.mode.firstPerson);
+    const faceCamera = firstPerson || actionEdge || (!pointerControl && side !== 0);
+    return {
+      moveX,
+      moveZ: forward,
+      yaw,
+      faceYaw: faceCamera ? yaw : null,
+      snap: actionEdge || firstPerson,
+      sprint: input.isPressed('ShiftLeft') || input.isPressed('ShiftRight'),
+      jump: input.isPressed('Space'),
+    };
+  }
+
+  // Tecla C: alterna tercera persona → panorámica → primera persona.
+  _cycleCameraMode() {
+    const mode = this.cameraRig.cycleMode();
+    const firstPerson = Boolean(mode.firstPerson);
+    if (firstPerson !== this._firstPerson) {
+      this._firstPerson = firstPerson;
+      if (firstPerson) {
+        this._capeWasVisible = this.player.cape.mesh.visible;
+        this.player.cape.mesh.visible = false;
+      } else if (this._capeWasVisible) {
+        this.player.cape.mesh.visible = true;
+      }
+      this.player.group.visible = !firstPerson;
+    }
+    this.toast.show(`📷 Cámara: ${mode.name}`, 1800);
+    this.sfx && this.sfx.zone && this.sfx.zone();
+  }
+
+  _updateCamera(dt) {
+    this.cameraRig.update(this.player.group, dt, false, heightAt);
   }
 
   // Abre/cierra la tienda al entrar o salir del área del tendero.
@@ -649,6 +713,7 @@ export class Game {
     this.stop();
     window.removeEventListener('resize', this._handleResize);
     this.input.dispose();
+    this.mouseLook.dispose();
     this.renderer.dispose();
   }
 }

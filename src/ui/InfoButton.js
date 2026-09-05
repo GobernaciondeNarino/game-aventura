@@ -6,7 +6,7 @@ const ICON_INFO = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" s
 /** Fila "tecla → acción" del panel de controles. */
 function controlRow(key, action) {
   return `<div style="display:flex;align-items:center;gap:10px;margin:4px 0;">
-    <span style="display:inline-flex;align-items:center;justify-content:center;min-width:54px;padding:3px 8px;background:#0f7d84;color:#fff;border-radius:6px;font-weight:700;font-size:0.85rem;">${key}</span>
+    <span style="display:inline-flex;align-items:center;justify-content:center;min-width:54px;padding:3px 8px;background:#0f7d84;color:#fff;border-radius:6px;font-weight:700;font-size:0.8rem;white-space:nowrap;">${key}</span>
     <span style="font-size:0.92rem;">${action}</span>
   </div>`;
 }
@@ -43,7 +43,9 @@ export class InfoButton {
       position: absolute;
       right: 16px;
       bottom: 64px;
-      width: min(330px, 86vw);
+      width: min(380px, 88vw);
+      max-height: 70vh;
+      overflow-y: auto;
       padding: 16px 20px;
       background: rgba(255,255,255,0.97);
       border: 2px solid #0f7d84;
@@ -57,15 +59,19 @@ export class InfoButton {
     `;
     this.panel.innerHTML = `
       <div style="font-size:1.05rem;font-weight:800;color:#0f7d84;margin-bottom:10px;">🎮 Controles</div>
-      ${controlRow('WASD', 'mover')}
+      ${controlRow('Ratón', 'dirige la cámara (clic en el juego para activarlo · Esc lo libera)')}
+      ${controlRow('↑ ↓', 'avanzar / retroceder (también W S)')}
+      ${controlRow('← →', 'desplazarse a los lados (giran si el ratón no está activo · también A D)')}
       ${controlRow('Shift', 'correr')}
       ${controlRow('Espacio', 'saltar')}
+      ${controlRow('C', 'cambiar cámara: cercana · panorámica · primera persona')}
+      ${controlRow('Clic izq. · F', 'patear / lanzar balón')}
+      ${controlRow('Clic der. · G', 'agarrar / soltar balón')}
       ${controlRow('E', 'responder pregunta')}
-      ${controlRow('F', 'patear / lanzar balón')}
-      ${controlRow('G', 'agarrar / soltar balón')}
       ${controlRow('H', 'pedir pista a NPC')}
       ${controlRow('B', 'subir / bajar patineta')}
-      <div style="margin-top:8px;font-size:0.8rem;opacity:0.7;">En móvil/tablet aparecen joystick y botones en pantalla.</div>
+      ${controlRow('Enter', 'chat multijugador')}
+      <div style="margin-top:8px;font-size:0.8rem;opacity:0.7;">En móvil/tablet: joystick para moverse, arrastra la mitad derecha para girar la cámara y usa los botones en pantalla.</div>
     `;
     parent.appendChild(this.panel);
   }

@@ -223,6 +223,15 @@ export class Trees {
       return pool[Math.floor(rand() * pool.length)].i;
     };
     const maxTrees = Math.round(1700 * this.countScale);
+    // Zonas libres de árboles alrededor de las maquetas y cumbres volcánicas.
+    const exclusions = SITES.map((s) => ({
+      x: s.position.x, z: s.position.z,
+      r: s.terrain?.cone ? Math.max(s.solidRadius + 10, s.terrain.cone.radius * 0.5) : s.solidRadius + 10,
+    }));
+    const nearSite = (x, z) => {
+      for (const e of exclusions) if (Math.hypot(x - e.x, z - e.z) < e.r) return true;
+      return false;
+    };
 
     const tryPlace = (x, z, { forceKind = null, minDist = 4.5, allowFlat = 0.35 } = {}) => {
       if (this.instances.length >= maxTrees) return false;
@@ -230,6 +239,7 @@ export class Trees {
       const h = heightAt(x, z);
       if (h < WATER_THRESHOLD + 0.35 || h > 62) return false;
       if (flatMask(x, z) > allowFlat) return false;
+      if (nearSite(x, z)) return false;
       const s = surfaceAt(x, z);
       if (s.hard > 0.05 || s.sand > 0.35 || s.water) return false;
       if (slopeAt(x, z) > 0.55) return false;
@@ -263,7 +273,7 @@ export class Trees {
     if (planada) {
       for (let i = 0; i < 110 * this.countScale; i++) {
         const a = rand() * Math.PI * 2;
-        const d = planada.solidRadius + 6 + rand() * 26;
+        const d = planada.solidRadius + 11 + rand() * 22;
         tryPlace(planada.position.x + Math.sin(a) * d, planada.position.z + Math.cos(a) * d, { allowFlat: 0.9, minDist: 3.8 });
       }
     }

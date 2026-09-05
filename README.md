@@ -8,15 +8,22 @@ laberinto y compra atuendos en la tienda Ñaño.
 
 Esta versión convierte el mundo plano original en un **entorno realista**
 (terreno con colinas y cordillera, césped que se mueve con el viento, bosques,
-lagos, río, cascada y mar del Pacífico, cielo físico y postprocesado) y añade
-**modo multijugador** entre navegadores sin necesidad de servidor.
+lagos, río, cascada y mar del Pacífico, cielo físico y postprocesado), añade
+**modo multijugador** entre navegadores sin necesidad de servidor, organiza el
+mundo en **niveles de terreno** (terrazas, cañón, volcanes que se escalan por
+un sendero), **reubica y rediseña los diez sitios turísticos** siguiendo la
+forma real de cada lugar y adopta **controles de videojuego** (ratón para la
+cámara, flechas para moverse, C para cambiar de cámara, clics para patear y
+agarrar).
 
 > Documentación técnica completa: [`docs/ENTORNO-REALISTA.md`](docs/ENTORNO-REALISTA.md)
 
 | | |
 |---|---|
-| ![Plaza central](docs/capturas/plaza.jpg) | ![Río y bosque](docs/capturas/rio.jpg) |
-| ![Laguna alta](docs/capturas/laguna-alta.jpg) | ![Costa del Pacífico](docs/capturas/costa.jpg) |
+| ![Santuario de Las Lajas sobre el cañón](docs/capturas/vista-lajas-canon.jpg) | ![Volcán Galeras y su sendero](docs/capturas/vista-galeras.jpg) |
+| ![Laguna Verde de Azufral](docs/capturas/vista-azufral-crater.jpg) | ![Catedral de Pasto](docs/capturas/catedral.jpg) |
+| ![Laguna de La Cocha e Isla La Corota](docs/capturas/vista-cocha-lago.jpg) | ![Sandoná](docs/capturas/sandona.jpg) |
+| ![El Morro de Tumaco](docs/capturas/morro.jpg) | ![Reserva La Planada](docs/capturas/planada.jpg) |
 
 ## Requisitos
 
@@ -59,18 +66,45 @@ por ejemplo `https://sitio.gov.co/aventura/`.
 
 ## Controles
 
-| Tecla | Acción |
+Controles clásicos de videojuego en tercera persona: **el cursor da la
+dirección** y las flechas mueven al personaje respecto a la cámara.
+
+| Control | Acción |
 |---|---|
-| W A S D / flechas | Moverse y girar |
+| Ratón | Dirige la cámara. Haz clic en el juego para capturar el cursor; `Esc` lo libera. |
+| ↑ ↓ (o W S) | Avanzar / retroceder hacia donde mira la cámara |
+| ← → (o A D) | Desplazarse a los lados. Si el ratón no está capturado, giran la cámara. |
 | Shift | Correr |
 | Espacio | Saltar |
+| C | Cambiar cámara: tercera persona → panorámica → primera persona |
+| Clic izquierdo / F | Patear o lanzar el balón (hacia donde mira la cámara) |
+| Clic derecho / G | Agarrar / soltar el balón |
 | E | Responder la pregunta del sitio |
-| F / G | Patear o lanzar / agarrar el balón |
 | H | Pedir pista a un guía |
 | B | Subir o bajar de la patineta |
 | Enter | Abrir el chat (multijugador) |
 
-En móviles y tabletas aparecen un joystick y botones en pantalla.
+En móviles y tabletas: joystick para moverse, arrastre en la mitad derecha de
+la pantalla para girar la cámara y botones en pantalla (incluidos 📷 cámara y
+B patineta).
+
+## El mundo
+
+- **Niveles del terreno.** Cada sitio se asienta en una terraza a su propia
+  cota; el sendero desde la plaza sube en rampa hasta ella. El río Guáitara
+  nace en la cascada, baja por rápidos y se encajona en un cañón de 12 m bajo
+  el Santuario de Las Lajas hasta una laguna baja. Los volcanes Galeras,
+  Cumbal, Chiles y Azufral son conos reales del terreno: se suben por un
+  sendero de tierra hasta el cráter.
+- **Sitios turísticos rediseñados** a partir de su forma real: el puente de dos
+  niveles y la basílica neogótica de Las Lajas sobre el cañón; el caserío
+  alpino de El Encano con muelle, lanchas y la Isla La Corota dentro del lago;
+  el cráter humeante del Galeras con su caseta de vigilancia; el casquete
+  glaciar del Cumbal; la laguna turquesa en el cráter del Azufral; la catedral
+  republicana de Pasto con cúpula, torres y atrio; el portal, la cabaña y la
+  torre de dosel de La Planada; el peñón con arco de El Morro y su puente de
+  madera; el páramo de frailejones y las termales del Chiles; la iglesia de
+  piedra, las casas coloniales y el mercado de sombreros de Sandoná.
 
 ## Estructura del proyecto
 
@@ -78,9 +112,9 @@ En móviles y tabletas aparecen un joystick y botones en pantalla.
 src/
   main.js            arranque
   game/Game.js       orquestador: mundo, sistemas, HUD y bucle de render
-  core/              entrada, cámara, colisiones (índice espacial)
+  core/              entrada (teclado, ratón con Pointer Lock), cámara orbital, colisiones
   entities/          jugador, balones, NPC, fauna, patineta
-  world/             plaza, senderos, vías, sitios, complejo deportivo, laberinto, tienda, layout
+  world/             plaza, senderos, vías, sitios (siteBuilders + siteParts), complejo deportivo, laberinto, tienda, layout
   environment/       terreno, atmósfera, césped, árboles, agua, hojas, postprocesado, calidad
   net/               multijugador (transportes P2P/relay y sincronización)
   ui/                paneles, chat, minimapa, controles táctiles

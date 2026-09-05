@@ -1,9 +1,9 @@
 // Pista de controles del balón que aparece en la parte inferior cuando el
-// jugador está cerca de un balón: teclas G (agarrar/soltar) y F (patear/lanzar).
+// jugador está cerca de un balón: clic derecho / G (agarrar/soltar) y clic izquierdo / F (patear/lanzar).
 
 /** Devuelve el HTML de una tecla dibujada como "keycap" dorado. */
 function keycap(label) {
-  return `<span style="display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;background:linear-gradient(180deg,#ffd479,#e8a020);color:#0c2439;font-weight:800;border-radius:7px;border:2px solid #fff3d6;box-shadow:0 2px 0 #a86f12;">${label}</span>`;
+  return `<span style="display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:30px;padding:0 7px;background:linear-gradient(180deg,#ffd479,#e8a020);color:#0c2439;font-weight:800;font-size:0.8rem;border-radius:7px;border:2px solid #fff3d6;box-shadow:0 2px 0 #a86f12;white-space:nowrap;">${label}</span>`;
 }
 
 export class ControlsHint {
@@ -30,8 +30,8 @@ export class ControlsHint {
       white-space: nowrap;
     `;
     this.el.innerHTML = `
-      ${keycap('G')}<span style="align-self:center;">agarrar / soltar</span>
-      ${keycap('F')}<span style="align-self:center;">patear / lanzar</span>
+      ${keycap('Clic der. · G')}<span style="align-self:center;">agarrar / soltar</span>
+      ${keycap('Clic izq. · F')}<span style="align-self:center;">patear / lanzar</span>
     `;
     parent.appendChild(this.el);
     this._visible = false;
