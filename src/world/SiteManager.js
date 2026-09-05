@@ -4,7 +4,7 @@
 //
 // Cada builder recibe un contexto con la cota local del terreno para apoyar
 // sus piezas en el relieve (terrazas, laderas de volcán, orillas).
-import { SITES, siteRotation } from './sitesData.js';
+import { SITES, siteRotation, siteBaseY } from './sitesData.js';
 import { SITE_BUILDERS } from './siteBuilders.js';
 import { Site, findActiveSite, resolveSiteCollisions } from './Site.js';
 
@@ -38,7 +38,7 @@ export class SiteManager {
           for (const tick of tickers) tick(dt);
         };
       }
-      const site = new Site(data, group, groundFn);
+      const site = new Site(data, group, ctx.baseY);
       site.extraColliders = ctx.colliders.map((c) => {
         const w = ctx.worldOf(c.x, c.z);
         return { x: w.x, z: w.z, r: c.r };
@@ -86,7 +86,7 @@ function makeContext(data, groundFn, waterFn) {
   const rot = siteRotation(data);
   const cos = Math.cos(rot);
   const sin = Math.sin(rot);
-  const baseY = groundFn(px, pz);
+  const baseY = siteBaseY(data, groundFn);
   const worldOf = (lx, lz) => ({ x: px + lx * cos + lz * sin, z: pz - lx * sin + lz * cos });
   return {
     site: data,

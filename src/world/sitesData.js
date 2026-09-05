@@ -7,6 +7,9 @@
 //   - `terrain.cone`: para los volcanes, el propio terreno forma el cono
 //     (altura y radio) y el sitio (cráter, nieve, humo) se coloca en la cumbre.
 //   - `terrain.crater`: hundimiento en la cumbre (laguna cratérica).
+//   - `anchor`: 'ground' (por defecto, la maqueta se apoya en la cota del
+//     terreno en su centro) o 'terrace' (se apoya en `elevation`, útil cuando
+//     el centro cae sobre un cauce excavado).
 // La rotación base de la maqueta mira hacia la plaza; `rotation` la ajusta.
 
 export const SITES = [
@@ -19,6 +22,9 @@ export const SITES = [
     rotation: Math.PI / 2, // el puente cruza el cañón (perpendicular al río)
     scale: 1,
     elevation: 0,
+    // El centro está sobre el cauce: la maqueta se ancla a la cota de la terraza,
+    // no al fondo del cañón (el tablero del puente queda a nivel de la meseta).
+    anchor: 'terrace',
     padRadius: 26,
     proximityRadius: 30,
     solidRadius: 13,
@@ -190,4 +196,10 @@ export function sitePathEnd(site) {
   const len = Math.hypot(site.position.x, site.position.z);
   if (site.terrain?.crater) return len - site.terrain.crater.radius - 1;
   return len - (site.solidRadius || 8) - 1;
+}
+
+/** Cota (m) a la que se ancla el origen de la maqueta de un sitio. */
+export function siteBaseY(site, groundFn) {
+  if (site.anchor === 'terrace') return site.elevation || 0;
+  return groundFn ? groundFn(site.position.x, site.position.z) : (site.elevation || 0);
 }
